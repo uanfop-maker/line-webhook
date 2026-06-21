@@ -109,12 +109,37 @@ def check_keyword_reply(text: str) -> Optional[str]:
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+async def get_or_fetch_display_name(user_id: str) -> str:
+    """Look up display_name from 用戶資料 sheet; if missing, fetch from LINE API and backfill."""
+    user_rows = sheets_get("用戶資料", "A:B")
+    for row in user_rows[1:]:  # skip header
+        if row and row[0] == user_id:
+            return row[1] if len(row) > 1 and row[1] else user_id
+    # Not found — fetch from LINE API and backfill
+    profile = await get_line_profile(user_id)
+    dname = profile.get("displayName", user_id)
+    if profile:
+        # Add to 用戶資料 as legacy follower
+        ts = now_iso()
+        sheets_append("用戶資料", [
+            user_id,
+            dname,
+            profile.get("pictureUrl", ""),
+            profile.get("statusMessage", ""),
+            profile.get("language", ""),
+            "",  # follow_at unknown
+            "",  # unfollow_at
+            "舊好友"  # assigned_agent = mark as legacy
+        ])
+    return dname
+
 _personal_tabs: set = set()  # cache of created tab names
 
 def log_to_personal_sheet(user_id: str, display_name: str, event_type: str, content: str, ts: str):
     if not GSHEET_PERSONAL_ID:
         return
-    tab_name = display_name[:30] if display_name else user_id
+    short_id = user_id[-8:] if len(user_id) >= 8 else user_id
+    tab_name = f"{display_name[:20]}({short_id})" if display_name and display_name != user_id else f"({short_id})"
     svc = get_sheets()
     # Create tab if not exists
     if tab_name not in _personal_tabs:
@@ -171,13 +196,7 @@ async def handle_unfollow(user_id: str):
 async def handle_message(user_id: str, reply_token: str, text: str):
     ts = now_iso()
     sheets_append("動作紀錄", [ts, user_id, "text", text])
-    # Get display name from 用戶資料 if available
-    user_rows = sheets_get("用戶資料", "A:B")
-    dname = user_id
-    for row in user_rows:
-        if row and row[0] == user_id:
-            dname = row[1] if len(row) > 1 else user_id
-            break
+    dname = await get_or_fetch_display_name(user_id)
     log_to_personal_sheet(user_id, dname, "text", text, ts)
     reply = check_keyword_reply(text)
     if reply:
@@ -186,12 +205,7 @@ async def handle_message(user_id: str, reply_token: str, text: str):
 async def handle_postback(user_id: str, data: str):
     ts = now_iso()
     sheets_append("動作紀錄", [ts, user_id, "postback", data])
-    user_rows = sheets_get("用戶資料", "A:B")
-    dname = user_id
-    for row in user_rows:
-        if row and row[0] == user_id:
-            dname = row[1] if len(row) > 1 else user_id
-            break
+    dname = await get_or_fetch_display_name(user_id)
     log_to_personal_sheet(user_id, dname, "postback", data, ts)
 
 def generate_daily_report():
