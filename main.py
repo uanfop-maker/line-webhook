@@ -8,6 +8,8 @@ import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -16,6 +18,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 GSHEET_LINE_ID = os.environ["GSHEET_LINE_ID"]
 GOOGLE_SA_JSON = os.environ["GOOGLE_SA_JSON"]
 GSHEET_PERSONAL_ID = os.environ.get("GSHEET_PERSONAL_ID", "")
+LIFF_ID = os.environ.get("LIFF_ID", "")
 
 TZ_TW = pytz.timezone("Asia/Taipei")
 
@@ -284,6 +287,69 @@ app = FastAPI(lifespan=lifespan)
 @app.get("/")
 def health():
     return {"status": "ok"}
+
+@app.get("/track")
+async def track_page(to: str = ""):
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+</head>
+<body>
+<script>
+const destination = {json.dumps(to)};
+const liffId = {json.dumps(LIFF_ID)};
+
+async function main() {{
+  try {{
+    await liff.init({{ liffId: liffId }});
+    let userId = '';
+    let displayName = '';
+    if (liff.isLoggedIn()) {{
+      const profile = await liff.getProfile();
+      userId = profile.userId;
+      displayName = profile.displayName;
+    }}
+    // Record click (fire and forget)
+    fetch('/api/track', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{
+        user_id: userId,
+        display_name: displayName,
+        destination: destination
+      }})
+    }}).catch(() => {{}});
+  }} catch(e) {{}}
+  // Redirect immediately
+  if (destination) {{
+    window.location.href = destination;
+  }}
+}}
+main();
+</script>
+<p style="font-family:sans-serif;color:#888;text-align:center;margin-top:40px">正在跳轉...</p>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
+
+
+class TrackPayload(BaseModel):
+    user_id: str = ""
+    display_name: str = ""
+    destination: str = ""
+
+@app.post("/api/track")
+async def api_track(payload: TrackPayload):
+    ts = now_iso()
+    if payload.user_id:
+        sheets_append("動作紀錄", [ts, payload.user_id, "uri_click", payload.destination])
+        dname = payload.display_name or payload.user_id
+        log_to_personal_sheet(payload.user_id, dname, "uri_click", payload.destination, ts)
+    return {"status": "ok"}
+
 
 @app.post("/webhook")
 async def webhook(request: Request):
