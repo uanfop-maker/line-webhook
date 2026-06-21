@@ -289,7 +289,7 @@ def health():
     return {"status": "ok"}
 
 @app.get("/track")
-async def track_page(to: str = ""):
+async def track_page(to: str = "", label: str = ""):
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -301,32 +301,39 @@ async def track_page(to: str = ""):
 <script>
 const destination = {json.dumps(to)};
 const liffId = {json.dumps(LIFF_ID)};
+const label = {json.dumps(label)};
 
 async function main() {{
+  let userId = '';
+  let displayName = '';
   try {{
-    await liff.init({{ liffId: liffId }});
-    let userId = '';
-    let displayName = '';
-    if (liff.isLoggedIn()) {{
-      const profile = await liff.getProfile();
-      userId = profile.userId;
-      displayName = profile.displayName;
+    if (liffId && liffId !== 'PLACEHOLDER') {{
+      await liff.init({{ liffId: liffId }});
+      if (liff.isLoggedIn()) {{
+        const profile = await liff.getProfile();
+        userId = profile.userId;
+        displayName = profile.displayName;
+      }}
     }}
-    // Record click (fire and forget)
     fetch('/api/track', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{
         user_id: userId,
         display_name: displayName,
-        destination: destination
+        destination: destination,
+        label: label
       }})
     }}).catch(() => {{}});
-  }} catch(e) {{}}
-  // Redirect immediately
-  if (destination) {{
-    window.location.href = destination;
+  }} catch(e) {{
+    // Still record anonymously on error
+    fetch('/api/track', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ user_id: '', display_name: '', destination: destination, label: label }})
+    }}).catch(() => {{}});
   }}
+  if (destination) window.location.href = destination;
 }}
 main();
 </script>
@@ -340,14 +347,17 @@ class TrackPayload(BaseModel):
     user_id: str = ""
     display_name: str = ""
     destination: str = ""
+    label: str = ""
 
 @app.post("/api/track")
 async def api_track(payload: TrackPayload):
     ts = now_iso()
+    uid = payload.user_id or "anonymous"
+    content = f"{payload.label} → {payload.destination}" if payload.label else payload.destination
+    sheets_append("動作紀錄", [ts, uid, "uri_click", content])
     if payload.user_id:
-        sheets_append("動作紀錄", [ts, payload.user_id, "uri_click", payload.destination])
         dname = payload.display_name or payload.user_id
-        log_to_personal_sheet(payload.user_id, dname, "uri_click", payload.destination, ts)
+        log_to_personal_sheet(payload.user_id, dname, "uri_click", content, ts)
     return {"status": "ok"}
 
 
