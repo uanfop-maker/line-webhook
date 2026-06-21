@@ -15,6 +15,7 @@ LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 GSHEET_LINE_ID = os.environ["GSHEET_LINE_ID"]
 GOOGLE_SA_JSON = os.environ["GOOGLE_SA_JSON"]
+GSHEET_PERSONAL_ID = os.environ.get("GSHEET_PERSONAL_ID", "")
 
 TZ_TW = pytz.timezone("Asia/Taipei")
 
@@ -108,6 +109,38 @@ def check_keyword_reply(text: str) -> Optional[str]:
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+_personal_tabs: set = set()  # cache of created tab names
+
+def log_to_personal_sheet(user_id: str, display_name: str, event_type: str, content: str, ts: str):
+    if not GSHEET_PERSONAL_ID:
+        return
+    tab_name = display_name[:30] if display_name else user_id
+    svc = get_sheets()
+    # Create tab if not exists
+    if tab_name not in _personal_tabs:
+        ss = svc.spreadsheets().get(spreadsheetId=GSHEET_PERSONAL_ID).execute()
+        existing = {s["properties"]["title"] for s in ss["sheets"]}
+        if tab_name not in existing:
+            svc.spreadsheets().batchUpdate(
+                spreadsheetId=GSHEET_PERSONAL_ID,
+                body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]}
+            ).execute()
+            # Write header
+            svc.spreadsheets().values().update(
+                spreadsheetId=GSHEET_PERSONAL_ID,
+                range=f"{tab_name}!A1",
+                valueInputOption="RAW",
+                body={"values": [["時間(UTC)", "動作類型", "內容", "user_id"]]}
+            ).execute()
+        _personal_tabs.add(tab_name)
+    # Append action
+    svc.spreadsheets().values().append(
+        spreadsheetId=GSHEET_PERSONAL_ID,
+        range=f"{tab_name}!A1",
+        valueInputOption="RAW",
+        body={"values": [[ts, event_type, content, user_id]]}
+    ).execute()
+
 async def handle_follow(user_id: str):
     profile = await get_line_profile(user_id)
     agent = get_assigned_agent(user_id)
@@ -125,6 +158,8 @@ async def handle_follow(user_id: str):
             ts, "", agent
         ])
     sheets_append("動作紀錄", [ts, user_id, "follow", ""])
+    display_name = profile.get("displayName", user_id)
+    log_to_personal_sheet(user_id, display_name, "follow", "", ts)
 
 async def handle_unfollow(user_id: str):
     ts = now_iso()
@@ -136,6 +171,14 @@ async def handle_unfollow(user_id: str):
 async def handle_message(user_id: str, reply_token: str, text: str):
     ts = now_iso()
     sheets_append("動作紀錄", [ts, user_id, "text", text])
+    # Get display name from 用戶資料 if available
+    user_rows = sheets_get("用戶資料", "A:B")
+    dname = user_id
+    for row in user_rows:
+        if row and row[0] == user_id:
+            dname = row[1] if len(row) > 1 else user_id
+            break
+    log_to_personal_sheet(user_id, dname, "text", text, ts)
     reply = check_keyword_reply(text)
     if reply:
         await reply_line(reply_token, reply)
@@ -143,6 +186,13 @@ async def handle_message(user_id: str, reply_token: str, text: str):
 async def handle_postback(user_id: str, data: str):
     ts = now_iso()
     sheets_append("動作紀錄", [ts, user_id, "postback", data])
+    user_rows = sheets_get("用戶資料", "A:B")
+    dname = user_id
+    for row in user_rows:
+        if row and row[0] == user_id:
+            dname = row[1] if len(row) > 1 else user_id
+            break
+    log_to_personal_sheet(user_id, dname, "postback", data, ts)
 
 def generate_daily_report():
     """Runs at 22:00 Asia/Taipei. Covers prev 22:00 → today 22:00."""
