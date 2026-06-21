@@ -3,3 +3,5 @@ uvicorn[standard]>=0.24.0
 httpx>=0.25.0
 google-api-python-client>=2.0.0
 google-auth>=2.0.0
+apscheduler>=3.10.0
+pytz>=2024.1

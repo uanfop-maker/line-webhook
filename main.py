@@ -1,17 +1,22 @@
 import os, json, hashlib, hmac, base64, asyncio
-from datetime import datetime, timezone
+import datetime as dt
+from datetime import datetime, timezone, timedelta
+from contextlib import asynccontextmanager
 from typing import Optional
 import httpx
+import pytz
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Request, HTTPException
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-
-app = FastAPI()
 
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 GSHEET_LINE_ID = os.environ["GSHEET_LINE_ID"]
 GOOGLE_SA_JSON = os.environ["GOOGLE_SA_JSON"]
+
+TZ_TW = pytz.timezone("Asia/Taipei")
 
 _sheets_svc = None
 
@@ -72,7 +77,6 @@ async def reply_line(reply_token: str, text: str):
         )
 
 def find_user_row(user_id: str) -> Optional[int]:
-    """Returns 1-based row index in 用戶資料 sheet, or None."""
     rows = sheets_get("用戶資料", "A:A")
     for i, row in enumerate(rows):
         if row and row[0] == user_id:
@@ -80,17 +84,15 @@ def find_user_row(user_id: str) -> Optional[int]:
     return None
 
 def get_assigned_agent(user_id: str) -> str:
-    """Check 專員名單 and return agent_name if user assigned."""
     rows = sheets_get("專員名單", "A:C")
-    for row in rows[1:]:  # skip header
+    for row in rows[1:]:
         if len(row) >= 3 and user_id in row[2].split(","):
             return row[1] if len(row) > 1 else row[0]
     return ""
 
 def check_keyword_reply(text: str) -> Optional[str]:
-    """Check 關鍵字回應 sheet. Return rendered reply or None."""
     rows = sheets_get("關鍵字回應", "A:C")
-    for row in rows[1:]:  # skip header
+    for row in rows[1:]:
         if len(row) < 2:
             continue
         keyword = row[0]
@@ -112,7 +114,6 @@ async def handle_follow(user_id: str):
     row_idx = find_user_row(user_id)
     ts = now_iso()
     if row_idx:
-        # Already exists — update follow_at and clear unfollow_at
         sheets_update("用戶資料", f"F{row_idx}:H{row_idx}", [[ts, "", agent]])
     else:
         sheets_append("用戶資料", [
@@ -142,6 +143,79 @@ async def handle_message(user_id: str, reply_token: str, text: str):
 async def handle_postback(user_id: str, data: str):
     ts = now_iso()
     sheets_append("動作紀錄", [ts, user_id, "postback", data])
+
+def generate_daily_report():
+    """Runs at 22:00 Asia/Taipei. Covers prev 22:00 → today 22:00."""
+    try:
+        now_tw = datetime.now(TZ_TW)
+        end_tw = now_tw.replace(hour=22, minute=0, second=0, microsecond=0)
+        start_tw = end_tw - timedelta(days=1)
+
+        start_utc = start_tw.astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
+        end_utc = end_tw.astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        date_label = end_tw.strftime("%Y-%m-%d")
+        sheet_tab = f"日報 {date_label}"
+
+        user_rows = sheets_get("用戶資料", "A:H")
+        new_users = {}
+        for row in user_rows[1:]:
+            if len(row) < 6:
+                continue
+            follow_at = row[5]
+            if start_utc <= follow_at < end_utc:
+                new_users[row[0]] = row[1] if len(row) > 1 else row[0]
+
+        action_rows = sheets_get("動作紀錄", "A:D")
+        click_details = []
+        clicked_uids = set()
+        for row in action_rows[1:]:
+            if len(row) < 4:
+                continue
+            ts, uid, etype, content = row[0], row[1], row[2], row[3]
+            if uid in new_users and start_utc <= ts < end_utc and etype == "postback":
+                clicked_uids.add(uid)
+                click_details.append([uid, new_users[uid], etype, content, ts])
+
+        total = len(new_users)
+        clicked = len(clicked_uids)
+        no_click = total - clicked
+
+        period_str = f"{start_tw.strftime('%Y-%m-%d %H:%M')} ~ {end_tw.strftime('%Y-%m-%d %H:%M')} (台灣時間)"
+        report_data = [
+            ["統計期間", period_str],
+            ["新加入人數", total],
+            ["有點擊人數", clicked],
+            ["沒有點擊人數", no_click],
+            [],
+            ["點擊者明細"],
+            ["user_id", "display_name", "event_type", "點擊內容", "時間(UTC)"],
+        ] + click_details
+
+        svc = get_sheets()
+        svc.spreadsheets().batchUpdate(
+            spreadsheetId=GSHEET_LINE_ID,
+            body={"requests": [{"addSheet": {"properties": {"title": sheet_tab}}}]}
+        ).execute()
+        svc.spreadsheets().values().update(
+            spreadsheetId=GSHEET_LINE_ID,
+            range=f"{sheet_tab}!A1",
+            valueInputOption="RAW",
+            body={"values": report_data}
+        ).execute()
+        print(f"[report] {sheet_tab}: {total} users, {clicked} clicked")
+    except Exception as e:
+        print(f"[report] ERROR: {e}")
+
+@asynccontextmanager
+async def lifespan(app_: FastAPI):
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(generate_daily_report, CronTrigger(hour=14, minute=0, timezone="UTC"))
+    scheduler.start()
+    yield
+    scheduler.shutdown()
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def health():
