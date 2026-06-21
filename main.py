@@ -1,4 +1,5 @@
 import os, json, hashlib, hmac, base64, asyncio
+from collections import deque
 import datetime as dt
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
@@ -39,6 +40,7 @@ async def notify_tg(text: str):
         pass
 
 _sheets_svc = None
+_recent_actions: deque = deque(maxlen=20)
 
 # In-memory cache for user display names to prevent duplicate 用戶資料 rows
 _user_cache: dict[str, str] = {}
@@ -244,6 +246,7 @@ async def handle_follow(user_id: str):
     # Update cache on follow
     _user_cache[user_id] = display_name
     sheets_append("動作紀錄", [ts, user_id, display_name, "follow", ""])
+    _recent_actions.append((ts, display_name, "follow"))
     log_to_personal_sheet(user_id, display_name, "follow", "", ts)
     await notify_tg(f"👤 新好友加入\n暱稱：{display_name}\nID：{user_id}")
 
@@ -254,12 +257,14 @@ async def handle_unfollow(user_id: str):
     if row_idx:
         sheets_update("用戶資料", f"G{row_idx}", [[ts]])
     sheets_append("動作紀錄", [ts, user_id, "", "unfollow", ""])
+    _recent_actions.append((ts, display_name, "unfollow"))
     await notify_tg(f"🚫 好友封鎖\n暱稱：{display_name}\nID：{user_id}")
 
 async def handle_message(user_id: str, reply_token: str, text: str):
     ts = now_iso()
     dname = await get_or_fetch_display_name(user_id)
     sheets_append("動作紀錄", [ts, user_id, dname, "text", text])
+    _recent_actions.append((ts, dname, text))
     log_to_personal_sheet(user_id, dname, "text", text, ts)
     reply = check_keyword_reply(text)
     if reply:
@@ -269,6 +274,7 @@ async def handle_postback(user_id: str, data: str):
     ts = now_iso()
     dname = await get_or_fetch_display_name(user_id)
     sheets_append("動作紀錄", [ts, user_id, dname, "postback", data])
+    _recent_actions.append((ts, dname, data))
     log_to_personal_sheet(user_id, dname, "postback", data, ts)
 
 def generate_daily_report():
@@ -536,10 +542,26 @@ async def api_track(payload: TrackPayload):
     if payload.user_id:
         dname = payload.display_name or payload.user_id
         log_to_personal_sheet(payload.user_id, dname, "uri_click", content, ts)
+    # Capture context before appending this click
+    context = list(_recent_actions)[-3:]
+    # Append this click to deque
+    _recent_actions.append((ts, payload.display_name or "匿名", content))
     if payload.label or payload.destination:
-        name = payload.display_name or "匿名"
-        btn = payload.label or payload.destination
-        await notify_tg(f"🖱️ 按鈕點擊：{btn}\n用戶：{name}")
+        this_content = payload.label or payload.destination
+        # De-duplicate: skip if previous action has the same content
+        if context and context[-1][2] == this_content:
+            pass  # skip notification
+        else:
+            ctx_lines = "\n".join(
+                f"{row[0][-8:]} | {row[1] or '匿名'} | {row[2]}"
+                for row in context
+            ) if context else "（無前置動作）"
+            name = payload.display_name or "匿名"
+            btn = payload.label or payload.destination
+            await notify_tg(
+                f"🖱️ 按鈕點擊：{btn}\n用戶：{name}\n"
+                f"────────────\n前{len(context)}筆動作：\n{ctx_lines}"
+            )
     return {"status": "ok"}
 
 
