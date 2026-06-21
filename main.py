@@ -18,11 +18,17 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 GSHEET_LINE_ID = os.environ["GSHEET_LINE_ID"]
 GOOGLE_SA_JSON = os.environ["GOOGLE_SA_JSON"]
 GSHEET_PERSONAL_ID = os.environ.get("GSHEET_PERSONAL_ID", "")
+GSHEET_DAILY_ID = os.environ.get("GSHEET_DAILY_ID", "")
 LIFF_ID = os.environ.get("LIFF_ID", "")
 
 TZ_TW = pytz.timezone("Asia/Taipei")
 
 _sheets_svc = None
+
+# In-memory cache for user display names to prevent duplicate 用戶資料 rows
+_user_cache: dict[str, str] = {}
+# Lock to prevent concurrent writes for the same user_id
+_user_cache_lock = asyncio.Lock()
 
 def get_sheets():
     global _sheets_svc
@@ -45,6 +51,13 @@ def sheets_append(tab: str, row: list):
 def sheets_get(tab: str, range_: str) -> list:
     res = get_sheets().spreadsheets().values().get(
         spreadsheetId=GSHEET_LINE_ID,
+        range=f"{tab}!{range_}"
+    ).execute()
+    return res.get("values", [])
+
+def sheets_get_from(spreadsheet_id: str, tab: str, range_: str) -> list:
+    res = get_sheets().spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
         range=f"{tab}!{range_}"
     ).execute()
     return res.get("values", [])
@@ -112,29 +125,56 @@ def check_keyword_reply(text: str) -> Optional[str]:
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+def _populate_cache_from_sheet():
+    """Read all 用戶資料 rows and populate _user_cache. Call while holding _user_cache_lock."""
+    try:
+        user_rows = sheets_get("用戶資料", "A:B")
+        for row in user_rows[1:]:  # skip header
+            if row and row[0]:
+                uid = row[0]
+                dname = row[1] if len(row) > 1 and row[1] else uid
+                if uid not in _user_cache:
+                    _user_cache[uid] = dname
+        print(f"[cache] Loaded {len(_user_cache)} users from sheet")
+    except Exception as e:
+        print(f"[cache] Error populating cache: {e}")
+
 async def get_or_fetch_display_name(user_id: str) -> str:
-    """Look up display_name from 用戶資料 sheet; if missing, fetch from LINE API and backfill."""
-    user_rows = sheets_get("用戶資料", "A:B")
-    for row in user_rows[1:]:  # skip header
-        if row and row[0] == user_id:
-            return row[1] if len(row) > 1 and row[1] else user_id
-    # Not found — fetch from LINE API and backfill
-    profile = await get_line_profile(user_id)
-    dname = profile.get("displayName", user_id)
-    if profile:
-        # Add to 用戶資料 as legacy follower
-        ts = now_iso()
-        sheets_append("用戶資料", [
-            user_id,
-            dname,
-            profile.get("pictureUrl", ""),
-            profile.get("statusMessage", ""),
-            profile.get("language", ""),
-            "",  # follow_at unknown
-            "",  # unfollow_at
-            "舊好友"  # assigned_agent = mark as legacy
-        ])
-    return dname
+    """Look up display_name; uses in-memory cache to prevent duplicate sheet rows."""
+    # Fast path: already in cache
+    if user_id in _user_cache:
+        return _user_cache[user_id]
+
+    # Slow path: acquire lock to prevent concurrent inserts for the same user
+    async with _user_cache_lock:
+        # Re-check after acquiring lock (another coroutine may have inserted while we waited)
+        if user_id in _user_cache:
+            return _user_cache[user_id]
+
+        # Cache miss — populate cache from sheet to catch any rows not yet in cache
+        _populate_cache_from_sheet()
+
+        # Check again after full sheet load
+        if user_id in _user_cache:
+            return _user_cache[user_id]
+
+        # Truly not found — fetch from LINE API and append to sheet
+        profile = await get_line_profile(user_id)
+        dname = profile.get("displayName", user_id)
+        if profile:
+            ts = now_iso()
+            sheets_append("用戶資料", [
+                user_id,
+                dname,
+                profile.get("pictureUrl", ""),
+                profile.get("statusMessage", ""),
+                profile.get("language", ""),
+                "",  # follow_at unknown
+                "",  # unfollow_at
+                "舊好友"  # assigned_agent = mark as legacy
+            ])
+        _user_cache[user_id] = dname
+        return dname
 
 _personal_tabs: set = set()  # cache of created tab names
 
@@ -186,6 +226,8 @@ async def handle_follow(user_id: str):
             ts, "", agent
         ])
     display_name = profile.get("displayName", user_id)
+    # Update cache on follow
+    _user_cache[user_id] = display_name
     sheets_append("動作紀錄", [ts, display_name, user_id, "follow", ""])
     log_to_personal_sheet(user_id, display_name, "follow", "", ts)
 
@@ -274,10 +316,119 @@ def generate_daily_report():
     except Exception as e:
         print(f"[report] ERROR: {e}")
 
+def generate_daily_stats():
+    """
+    Runs at 22:00 Asia/Taipei.
+    Reports stats for the period: yesterday 22:00 TW ~ today 22:00 TW
+    i.e. running at 6/22 22:00 → reports stats for 6/21 22:00 ~ 6/22 22:00
+    Day label: the end day (e.g. "2026/06/22").
+    UTC equivalent: 14:00 UTC boundaries.
+    """
+    if not GSHEET_DAILY_ID:
+        print("[daily_stats] GSHEET_DAILY_ID not set, skipping")
+        return
+    try:
+        now_tw = datetime.now(TZ_TW)
+        # Period end = today 22:00 TW
+        end_tw = now_tw.replace(hour=22, minute=0, second=0, microsecond=0)
+        # Period start = yesterday 22:00 TW
+        start_tw = end_tw - timedelta(days=1)
+
+        # UTC boundaries (22:00 TW = 14:00 UTC)
+        start_utc = start_tw.astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
+        end_utc = end_tw.astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Date label = end day
+        date_label = end_tw.strftime("%Y/%m/%d")
+
+        # Read 用戶資料 (A=user_id, F=follow_at col6, G=unfollow_at col7)
+        user_rows = sheets_get("用戶資料", "A:H")
+
+        join_count = 0
+        block_same_day = 0
+        block_other_day = 0
+
+        for row in user_rows[1:]:  # skip header
+            if len(row) < 6:
+                continue
+            follow_at = row[5] if len(row) > 5 else ""
+            unfollow_at = row[6] if len(row) > 6 else ""
+
+            followed_in_period = follow_at and start_utc <= follow_at < end_utc
+            unfollowed_in_period = unfollow_at and start_utc <= unfollow_at < end_utc
+
+            if followed_in_period:
+                join_count += 1
+
+            if unfollowed_in_period:
+                if followed_in_period:
+                    block_same_day += 1
+                else:
+                    block_other_day += 1
+
+        # Read 動作紀錄 (A=timestamp, B=暱稱, C=user_id, D=event_type, E=content)
+        action_rows = sheets_get("動作紀錄", "A:E")
+
+        click_1x1 = 0
+        click_faq = 0
+        click_money = 0
+
+        for row in action_rows[1:]:  # skip header
+            if len(row) < 5:
+                continue
+            ts, _nick, _uid, etype, content = row[0], row[1], row[2], row[3], row[4]
+            if etype == "uri_click" and start_utc <= ts < end_utc:
+                if content.startswith("1x1"):
+                    click_1x1 += 1
+                elif content.startswith("faq"):
+                    click_faq += 1
+                elif content.startswith("money"):
+                    click_money += 1
+
+        new_row = [date_label, join_count, block_same_day, block_other_day, click_1x1, click_faq, click_money]
+
+        svc = get_sheets()
+
+        # Check if header exists in daily sheet
+        existing = svc.spreadsheets().values().get(
+            spreadsheetId=GSHEET_DAILY_ID,
+            range="Sheet1!A1:G1"
+        ).execute().get("values", [])
+
+        header = ["日期", "加入人數", "封鎖(當天加入)", "封鎖(非當天加入)", "1x1點擊", "faq點擊", "money點擊"]
+
+        if not existing or existing[0] != header:
+            # Write header first
+            svc.spreadsheets().values().update(
+                spreadsheetId=GSHEET_DAILY_ID,
+                range="Sheet1!A1",
+                valueInputOption="RAW",
+                body={"values": [header]}
+            ).execute()
+
+        # Append the stats row
+        svc.spreadsheets().values().append(
+            spreadsheetId=GSHEET_DAILY_ID,
+            range="Sheet1!A1",
+            valueInputOption="RAW",
+            body={"values": [new_row]}
+        ).execute()
+
+        print(f"[daily_stats] {date_label}: join={join_count}, block_same={block_same_day}, block_other={block_other_day}, 1x1={click_1x1}, faq={click_faq}, money={click_money}")
+    except Exception as e:
+        print(f"[daily_stats] ERROR: {e}")
+
 @asynccontextmanager
 async def lifespan(app_: FastAPI):
+    # Pre-populate user cache from existing 用戶資料 rows to prevent duplicates after restart
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _populate_cache_from_sheet)
+
     scheduler = AsyncIOScheduler()
+    # Existing daily report job
     scheduler.add_job(generate_daily_report, CronTrigger(hour=14, minute=0, timezone="UTC"))
+    # New daily stats job (also 22:00 Asia/Taipei = 14:00 UTC)
+    scheduler.add_job(generate_daily_stats, CronTrigger(hour=14, minute=0, timezone="UTC"))
     scheduler.start()
     yield
     scheduler.shutdown()
