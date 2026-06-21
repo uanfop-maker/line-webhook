@@ -185,8 +185,8 @@ async def handle_follow(user_id: str):
             profile.get("language", ""),
             ts, "", agent
         ])
-    sheets_append("動作紀錄", [ts, user_id, "follow", ""])
     display_name = profile.get("displayName", user_id)
+    sheets_append("動作紀錄", [ts, display_name, user_id, "follow", ""])
     log_to_personal_sheet(user_id, display_name, "follow", "", ts)
 
 async def handle_unfollow(user_id: str):
@@ -194,12 +194,12 @@ async def handle_unfollow(user_id: str):
     row_idx = find_user_row(user_id)
     if row_idx:
         sheets_update("用戶資料", f"G{row_idx}", [[ts]])
-    sheets_append("動作紀錄", [ts, user_id, "unfollow", ""])
+    sheets_append("動作紀錄", [ts, "", user_id, "unfollow", ""])
 
 async def handle_message(user_id: str, reply_token: str, text: str):
     ts = now_iso()
-    sheets_append("動作紀錄", [ts, user_id, "text", text])
     dname = await get_or_fetch_display_name(user_id)
+    sheets_append("動作紀錄", [ts, dname, user_id, "text", text])
     log_to_personal_sheet(user_id, dname, "text", text, ts)
     reply = check_keyword_reply(text)
     if reply:
@@ -207,8 +207,8 @@ async def handle_message(user_id: str, reply_token: str, text: str):
 
 async def handle_postback(user_id: str, data: str):
     ts = now_iso()
-    sheets_append("動作紀錄", [ts, user_id, "postback", data])
     dname = await get_or_fetch_display_name(user_id)
+    sheets_append("動作紀錄", [ts, dname, user_id, "postback", data])
     log_to_personal_sheet(user_id, dname, "postback", data, ts)
 
 def generate_daily_report():
@@ -233,13 +233,13 @@ def generate_daily_report():
             if start_utc <= follow_at < end_utc:
                 new_users[row[0]] = row[1] if len(row) > 1 else row[0]
 
-        action_rows = sheets_get("動作紀錄", "A:D")
+        action_rows = sheets_get("動作紀錄", "A:E")
         click_details = []
         clicked_uids = set()
         for row in action_rows[1:]:
-            if len(row) < 4:
+            if len(row) < 5:
                 continue
-            ts, uid, etype, content = row[0], row[1], row[2], row[3]
+            ts, _dname, uid, etype, content = row[0], row[1], row[2], row[3], row[4]
             if uid in new_users and start_utc <= ts < end_utc and etype == "postback":
                 clicked_uids.add(uid)
                 click_details.append([uid, new_users[uid], etype, content, ts])
@@ -354,7 +354,7 @@ async def api_track(payload: TrackPayload):
     ts = now_iso()
     uid = payload.user_id or "anonymous"
     content = f"{payload.label} → {payload.destination}" if payload.label else payload.destination
-    sheets_append("動作紀錄", [ts, uid, "uri_click", content])
+    sheets_append("動作紀錄", [ts, payload.display_name or "", uid, "uri_click", content])
     if payload.user_id:
         dname = payload.display_name or payload.user_id
         log_to_personal_sheet(payload.user_id, dname, "uri_click", content, ts)
