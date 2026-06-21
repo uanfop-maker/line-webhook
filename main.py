@@ -85,9 +85,9 @@ def find_user_row(user_id: str) -> Optional[int]:
     return None
 
 def get_assigned_agent(user_id: str) -> str:
-    rows = sheets_get("專員名單", "A:C")
+    rows = sheets_get("專員名單", "A:E")
     for row in rows[1:]:
-        if len(row) >= 3 and user_id in row[2].split(","):
+        if len(row) >= 5 and user_id in row[4].split(","):
             return row[1] if len(row) > 1 else row[0]
     return ""
 
