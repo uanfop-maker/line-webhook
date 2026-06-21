@@ -20,8 +20,23 @@ GOOGLE_SA_JSON = os.environ["GOOGLE_SA_JSON"]
 GSHEET_PERSONAL_ID = os.environ.get("GSHEET_PERSONAL_ID", "")
 GSHEET_DAILY_ID = os.environ.get("GSHEET_DAILY_ID", "")
 LIFF_ID = os.environ.get("LIFF_ID", "")
+NOTIFY_TG_TOKEN = os.environ.get("NOTIFY_TG_TOKEN", "")
+NOTIFY_TG_CHAT_ID = os.environ.get("NOTIFY_TG_CHAT_ID", "")
 
 TZ_TW = pytz.timezone("Asia/Taipei")
+
+async def notify_tg(text: str):
+    if not NOTIFY_TG_TOKEN or not NOTIFY_TG_CHAT_ID:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"https://api.telegram.org/bot{NOTIFY_TG_TOKEN}/sendMessage",
+                json={"chat_id": NOTIFY_TG_CHAT_ID, "text": text, "parse_mode": "HTML"},
+                timeout=5
+            )
+    except Exception:
+        pass
 
 _sheets_svc = None
 
@@ -230,13 +245,16 @@ async def handle_follow(user_id: str):
     _user_cache[user_id] = display_name
     sheets_append("動作紀錄", [ts, user_id, display_name, "follow", ""])
     log_to_personal_sheet(user_id, display_name, "follow", "", ts)
+    await notify_tg(f"👤 新好友加入\n暱稱：{display_name}\nID：{user_id}")
 
 async def handle_unfollow(user_id: str):
     ts = now_iso()
     row_idx = find_user_row(user_id)
+    display_name = _user_cache.get(user_id, user_id)
     if row_idx:
         sheets_update("用戶資料", f"G{row_idx}", [[ts]])
     sheets_append("動作紀錄", [ts, user_id, "", "unfollow", ""])
+    await notify_tg(f"🚫 好友封鎖\n暱稱：{display_name}\nID：{user_id}")
 
 async def handle_message(user_id: str, reply_token: str, text: str):
     ts = now_iso()
@@ -415,6 +433,15 @@ def generate_daily_stats():
         ).execute()
 
         print(f"[daily_stats] {date_label}: join={join_count}, block_same={block_same_day}, block_other={block_other_day}, 1x1={click_1x1}, faq={click_faq}, money={click_money}")
+        asyncio.ensure_future(notify_tg(
+            f"📊 每日統計 {date_label}\n"
+            f"加入：{join_count} 人\n"
+            f"封鎖（當天加入）：{block_same_day} 人\n"
+            f"封鎖（非當天加入）：{block_other_day} 人\n"
+            f"1x1 點擊：{click_1x1} 次\n"
+            f"FAQ 點擊：{click_faq} 次\n"
+            f"money 點擊：{click_money} 次"
+        ))
     except Exception as e:
         print(f"[daily_stats] ERROR: {e}")
 
@@ -509,6 +536,10 @@ async def api_track(payload: TrackPayload):
     if payload.user_id:
         dname = payload.display_name or payload.user_id
         log_to_personal_sheet(payload.user_id, dname, "uri_click", content, ts)
+    if payload.label or payload.destination:
+        name = payload.display_name or "匿名"
+        btn = payload.label or payload.destination
+        await notify_tg(f"🖱️ 按鈕點擊：{btn}\n用戶：{name}")
     return {"status": "ok"}
 
 
