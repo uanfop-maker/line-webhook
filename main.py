@@ -383,6 +383,16 @@ async def handle_unfollow(user_id: str):
 async def handle_message(user_id: str, reply_token: str, text: str):
     ts = now_iso()
     dname = await get_or_fetch_display_name(user_id)
+
+    if text == "__ASSIGN__":
+        agent = assign_agent(user_id, dname)
+        flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"])
+        await line_reply(reply_token, [flex_msg])
+        sheets_append("動作紀錄", [ts, user_id, dname, "assign", agent["agent_name"]])
+        _recent_actions.append((ts, dname, f"assign:{agent['agent_name']}"))
+        await notify_tg(f"🎯 專員分配\n用戶：{dname}\n指派：{agent['agent_name']}")
+        return
+
     sheets_append("動作紀錄", [ts, user_id, dname, "text", text])
     _recent_actions.append((ts, dname, text))
     log_to_personal_sheet(user_id, dname, "text", text, ts)
