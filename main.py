@@ -41,6 +41,7 @@ async def notify_tg(text: str):
 
 _sheets_svc = None
 _recent_actions: deque = deque(maxlen=20)
+_rr_index: int = 0
 
 # In-memory cache for user display names to prevent duplicate 用戶資料 rows
 _user_cache: dict[str, str] = {}
@@ -109,6 +110,125 @@ async def reply_line(reply_token: str, text: str):
             },
             json={"replyToken": reply_token, "messages": [{"type": "text", "text": text}]}
         )
+
+async def line_reply(reply_token: str, messages: list):
+    """Reply with one or more message objects (any type: text, flex, etc.)"""
+    async with httpx.AsyncClient() as c:
+        await c.post(
+            "https://api.line.me/v2/bot/message/reply",
+            headers={
+                "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            json={"replyToken": reply_token, "messages": messages}
+        )
+
+def assign_agent(user_id: str, display_name: str) -> dict:
+    """Returns {'agent_name': str, 'agent_link': str} after assigning or finding existing"""
+    global _rr_index
+    rows = sheets_get("專員名單", "A:E")
+    if not rows or len(rows) <= 1:
+        return {"agent_name": "客服", "agent_link": ""}
+
+    data_rows = rows[1:]  # skip header
+
+    # Check if already assigned
+    for i, row in enumerate(data_rows):
+        if len(row) >= 5 and user_id in row[4].split(","):
+            return {
+                "agent_name": row[1] if len(row) > 1 else row[0],
+                "agent_link": row[3] if len(row) > 3 else ""
+            }
+
+    # Round-robin assignment
+    idx = _rr_index % len(data_rows)
+    _rr_index += 1
+    target = data_rows[idx]
+
+    # Add user_id to this agent's line_user_ids
+    svc = get_sheets()
+    SHEET_ID = GSHEET_LINE_ID
+    existing_ids = target[4].strip() if len(target) >= 5 and target[4] else ""
+    new_ids = f"{existing_ids},{user_id}".lstrip(",") if existing_ids else user_id
+    # Row number in sheet = idx + 2 (1 for header, 1 for 1-based indexing)
+    row_num = idx + 2
+    svc.spreadsheets().values().update(
+        spreadsheetId=SHEET_ID,
+        range=f"專員名單!E{row_num}",
+        valueInputOption="RAW",
+        body={"values": [[new_ids]]}
+    ).execute()
+
+    # Also update 用戶資料 assigned_agent column (H)
+    user_rows = sheets_get("用戶資料", "A:H")
+    for j, urow in enumerate(user_rows[1:], start=2):
+        if urow and urow[0] == user_id:
+            svc.spreadsheets().values().update(
+                spreadsheetId=SHEET_ID,
+                range=f"用戶資料!H{j}",
+                valueInputOption="RAW",
+                body={"values": [[target[1] if len(target) > 1 else ""]]}
+            ).execute()
+            break
+
+    return {
+        "agent_name": target[1] if len(target) > 1 else target[0],
+        "agent_link": target[3] if len(target) > 3 else ""
+    }
+
+def build_assign_flex(agent_name: str, agent_link: str) -> dict:
+    msg = {
+        "type": "flex",
+        "altText": f"您的專屬顧問是 {agent_name}",
+        "contents": {
+            "type": "bubble",
+            "hero": {
+                "type": "image",
+                "url": "https://i.imgur.com/t7oWcNQ.jpeg",
+                "size": "full",
+                "aspectRatio": "20:13",
+                "aspectMode": "cover"
+            },
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "text",
+                        "text": "您的專屬顧問",
+                        "weight": "bold",
+                        "size": "xl",
+                        "color": "#1a1a1a"
+                    },
+                    {
+                        "type": "text",
+                        "text": agent_name,
+                        "size": "lg",
+                        "color": "#666666",
+                        "margin": "md"
+                    }
+                ]
+            }
+        }
+    }
+    if agent_link:
+        msg["contents"]["footer"] = {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": "#C8A96E",
+                    "action": {
+                        "type": "uri",
+                        "label": "➡️ 立即聯絡",
+                        "uri": agent_link
+                    }
+                }
+            ]
+        }
+    return msg
 
 def find_user_row(user_id: str) -> Optional[int]:
     rows = sheets_get("用戶資料", "A:A")
@@ -270,9 +390,21 @@ async def handle_message(user_id: str, reply_token: str, text: str):
     if reply:
         await reply_line(reply_token, reply)
 
-async def handle_postback(user_id: str, data: str):
+async def handle_postback(user_id: str, data: str, reply_token: str = ""):
     ts = now_iso()
     dname = await get_or_fetch_display_name(user_id)
+
+    if data == "__ASSIGN__":
+        result = assign_agent(user_id, dname)
+        flex_msg = build_assign_flex(result["agent_name"], result["agent_link"])
+        if reply_token:
+            await line_reply(reply_token, [flex_msg])
+        sheets_append("動作紀錄", [ts, user_id, dname, "assign", result["agent_name"]])
+        _recent_actions.append((ts, dname, f"assign:{result['agent_name']}"))
+        log_to_personal_sheet(user_id, dname, "assign", result["agent_name"], ts)
+        await notify_tg(f"🎯 專員分配\n用戶：{dname}\n指派：{result['agent_name']}")
+        return
+
     sheets_append("動作紀錄", [ts, user_id, dname, "postback", data])
     _recent_actions.append((ts, dname, data))
     log_to_personal_sheet(user_id, dname, "postback", data, ts)
@@ -584,6 +716,6 @@ async def webhook(request: Request):
         elif etype == "message" and event.get("message", {}).get("type") == "text":
             asyncio.create_task(handle_message(uid, rtoken, event["message"]["text"]))
         elif etype == "postback":
-            asyncio.create_task(handle_postback(uid, event.get("postback", {}).get("data", "")))
+            asyncio.create_task(handle_postback(uid, event.get("postback", {}).get("data", ""), rtoken))
 
     return {"status": "ok"}
