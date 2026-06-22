@@ -789,7 +789,8 @@ async def api_track(payload: TrackPayload):
         name = payload.display_name or _user_cache.get(payload.user_id, "") or (f"用戶({payload.user_id[-8:]})" if payload.user_id else "匿名")
         agent_name = payload.agent or "未知"
         src = payload.src or ""
-        content = f"加入專員 → {agent_name}"
+        src_tag = f" [{src}]" if src else ""
+        content = f"加入專員 → {agent_name}{src_tag}"
         sheets_append("動作紀錄", [ts, uid, name, "uri_click", content])
         _recent_actions.append((ts, name, content))
         if payload.user_id:
