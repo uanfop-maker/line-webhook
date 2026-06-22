@@ -556,7 +556,7 @@ def generate_daily_report():
             if len(row) < 5:
                 continue
             ts, uid, _dname, etype, content = row[0], row[1], row[2], row[3], row[4]
-            if uid in new_users and start_utc <= ts < end_utc and etype == "postback":
+            if uid in new_users and start_utc <= ts < end_utc and etype == "uri_click":
                 clicked_uids.add(uid)
                 click_details.append([uid, new_users[uid], etype, content, ts])
 
