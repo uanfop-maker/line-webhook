@@ -528,67 +528,243 @@ async def handle_postback(user_id: str, data: str, reply_token: str = ""):
     log_to_personal_sheet(user_id, dname, "postback", data, ts)
 
 def generate_daily_report():
-    """Runs at 22:00 Asia/Taipei. Covers prev 22:00 → today 22:00."""
+    """
+    Runs at 22:00 Asia/Taipei. Covers prev 22:00 → today 22:00.
+    Writes a 6-section structured 日報 with stat hyperlinks and per-user click details.
+    """
+    import re as _re
     try:
-        now_tw = datetime.now(TZ_TW)
-        end_tw = now_tw.replace(hour=22, minute=0, second=0, microsecond=0)
+        now_tw  = datetime.now(TZ_TW)
+        end_tw  = now_tw.replace(hour=22, minute=0, second=0, microsecond=0)
         start_tw = end_tw - timedelta(days=1)
 
         start_utc = start_tw.astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
-        end_utc = end_tw.astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
+        end_utc   = end_tw.astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
 
         date_label = end_tw.strftime("%Y-%m-%d")
-        sheet_tab = f"日報 {date_label}"
-
-        user_rows = sheets_get("用戶資料", "A:H")
-        new_users = {}
-        for row in user_rows[1:]:
-            if len(row) < 6:
-                continue
-            follow_at = row[5]
-            if start_utc <= follow_at < end_utc:
-                new_users[row[0]] = row[1] if len(row) > 1 else row[0]
-
-        action_rows = sheets_get("動作紀錄", "A:E")
-        click_details = []
-        clicked_uids = set()
-        for row in action_rows[1:]:
-            if len(row) < 5:
-                continue
-            ts, uid, _dname, etype, content = row[0], row[1], row[2], row[3], row[4]
-            if uid in new_users and start_utc <= ts < end_utc and etype == "uri_click":
-                clicked_uids.add(uid)
-                click_details.append([uid, new_users[uid], etype, content, ts])
-
-        total = len(new_users)
-        clicked = len(clicked_uids)
-        no_click = total - clicked
-
-        period_str = f"{start_tw.strftime('%Y-%m-%d %H:%M')} ~ {end_tw.strftime('%Y-%m-%d %H:%M')} (台灣時間)"
-        report_data = [
-            ["統計期間", period_str],
-            ["新加入人數", total],
-            ["有點擊人數", clicked],
-            ["沒有點擊人數", no_click],
-            [],
-            ["點擊者明細"],
-            ["user_id", "display_name", "event_type", "點擊內容", "時間(UTC)"],
-        ] + click_details
+        sheet_tab  = f"日報 {date_label}"
+        period_str = (
+            f"{start_tw.strftime('%Y-%m-%d %H:%M')} ~ "
+            f"{end_tw.strftime('%Y-%m-%d %H:%M')} (台灣時間)"
+        )
 
         svc = get_sheets()
-        svc.spreadsheets().batchUpdate(
+        ss  = svc.spreadsheets()
+
+        # ── Read 用戶資料 ──────────────────────────────────────────────────────
+        # A=user_id B=display_name C=pic_url D=status E=lang F=follow_at G=unfollow_at H=agent
+        user_rows = sheets_get("用戶資料", "A:H")
+        users: dict = {}
+        for row in user_rows[1:]:
+            if not row or not row[0]:
+                continue
+            uid = row[0]
+            users[uid] = {
+                "display_name": row[1] if len(row) > 1 else "",
+                "pic_url":      row[2] if len(row) > 2 else "",
+                "follow_at":    row[5] if len(row) > 5 else "",
+                "unfollow_at":  row[6] if len(row) > 6 else "",
+            }
+
+        # ── Read 動作紀錄 ──────────────────────────────────────────────────────
+        action_rows = sheets_get("動作紀錄", "A:E")
+        period_actions = []
+        for row in action_rows[1:]:
+            if len(row) < 4:
+                continue
+            ts    = row[0]
+            uid   = row[1]
+            etype = row[3]
+            content = row[4] if len(row) > 4 else ""
+            if start_utc <= ts < end_utc:
+                period_actions.append((ts, uid, etype, content))
+
+        # ── Get personal sheet gid map ─────────────────────────────────────────
+        suffix_to_gid: dict = {}
+        if GSHEET_PERSONAL_ID:
+            personal_meta = ss.get(spreadsheetId=GSHEET_PERSONAL_ID).execute()
+            for s in personal_meta.get("sheets", []):
+                title = s["properties"]["title"]
+                gid   = s["properties"]["sheetId"]
+                m = _re.search(r'\(([A-Za-z0-9]{8})\)\s*$', title)
+                if m:
+                    suffix_to_gid[m.group(1)] = gid
+
+        def get_personal_gid(uid: str):
+            suffix = uid[-8:] if len(uid) >= 8 else uid
+            return suffix_to_gid.get(suffix)
+
+        # ── Classify users ─────────────────────────────────────────────────────
+        new_user_ids: set = set()
+        old_user_ids: set = set()
+        for uid, u in users.items():
+            fa = u["follow_at"]
+            if fa and start_utc <= fa < end_utc:
+                new_user_ids.add(uid)
+            else:
+                old_user_ids.add(uid)
+
+        user_period_actions: dict = {}
+        for (ts, uid, etype, content) in period_actions:
+            user_period_actions.setdefault(uid, []).append((ts, etype, content))
+
+        uids_clicked    = {uid for uid, acts in user_period_actions.items()
+                           if any(e == "uri_click" for _, e, _ in acts)}
+        uids_non_follow = {uid for uid, acts in user_period_actions.items()
+                           if any(e != "follow" for _, e, _ in acts)}
+        uids_only_text  = {uid for uid, acts in user_period_actions.items()
+                           if all(e == "text" for _, e, _ in acts)}
+
+        sec1_uids = sorted(uid for uid in new_user_ids if uid in uids_non_follow and uid not in uids_clicked)
+        sec2_uids = sorted(uid for uid in old_user_ids if uid in uids_non_follow and uid not in uids_clicked)
+        sec3_uids = sorted(uid for uid in new_user_ids if uid not in uids_non_follow)
+        sec4_uids = sorted(uid for uid in old_user_ids if uid in uids_only_text)
+        sec5_uids = sorted(uid for uid in new_user_ids if uid in uids_clicked)
+        sec6_uids = sorted(uid for uid in old_user_ids if uid in uids_clicked)
+
+        # ── Statistics ─────────────────────────────────────────────────────────
+        total_ever_clicked = len({uid for uid, acts in user_period_actions.items()
+                                   if any(e == "uri_click" for _, e, _ in acts)})
+        block_total    = 0
+        block_same_day = 0
+        for uid, u in users.items():
+            ua = u.get("unfollow_at", "")
+            fa = u.get("follow_at", "")
+            if ua and start_utc <= ua < end_utc:
+                block_total += 1
+                if fa and start_utc <= fa < end_utc:
+                    block_same_day += 1
+
+        new_count          = len(new_user_ids)
+        clicked_today_new  = len(sec5_uids)
+        no_click_today_new = len(sec1_uids) + len(sec3_uids)
+        silent_today_new   = len(sec3_uids)
+
+        # ── Row position calculation ───────────────────────────────────────────
+        STATS_ROWS = 8
+        section_sizes = [len(sec1_uids), len(sec2_uids), len(sec3_uids),
+                         len(sec4_uids), len(sec5_uids), len(sec6_uids)]
+
+        def section_header_row(idx: int) -> int:
+            row = STATS_ROWS
+            for i in range(idx):
+                row += 1 + 1 + 1 + section_sizes[i]  # blank + header + col-hdr + data
+            row += 1 + 1  # blank + header for this section
+            return row
+
+        row_sec1_header = section_header_row(0)
+        row_sec3_header = section_header_row(2)
+        row_sec5_header = section_header_row(4)
+
+        # ── Find or create the 日報 sheet ──────────────────────────────────────
+        line_meta   = ss.get(spreadsheetId=GSHEET_LINE_ID).execute()
+        line_sheets = line_meta.get("sheets", [])
+        daily_gid   = None
+        for s in line_sheets:
+            if s["properties"]["title"] == sheet_tab:
+                daily_gid = s["properties"]["sheetId"]
+                break
+
+        if daily_gid is not None:
+            ss.values().clear(
+                spreadsheetId=GSHEET_LINE_ID,
+                range=f"'{sheet_tab}'!A1:Z1000",
+                body={}
+            ).execute()
+        else:
+            res = ss.batchUpdate(
+                spreadsheetId=GSHEET_LINE_ID,
+                body={"requests": [{"addSheet": {"properties": {"title": sheet_tab}}}]}
+            ).execute()
+            daily_gid = res["replies"][0]["addSheet"]["properties"]["sheetId"]
+
+        # ── Helper cells ───────────────────────────────────────────────────────
+        def stat_hyperlink(section_row: int, label: str) -> str:
+            return f'=HYPERLINK("#gid={daily_gid}&range=A{section_row}","{label}")'
+
+        def user_id_cell(uid: str) -> str:
+            gid = get_personal_gid(uid)
+            if gid is not None:
+                return f'=HYPERLINK("#gid={gid}&range=A1","{uid}")'
+            return uid
+
+        def label_click_content(content: str) -> str:
+            if "[1x1]" in content or "[1X1]" in content:
+                return "1x1"
+            if "[FAQ]" in content or "[faq]" in content:
+                return "FAQ"
+            if "[扶植金]" in content:
+                return "扶植金"
+            return "agent"
+
+        def user_base_row(uid: str) -> list:
+            u = users.get(uid, {})
+            return [user_id_cell(uid), u.get("display_name", ""),
+                    u.get("pic_url", ""), u.get("follow_at", "")]
+
+        def click_row(uid: str) -> list:
+            u    = users.get(uid, {})
+            acts = user_period_actions.get(uid, [])
+            click_acts = [(ts, content) for (ts, etype, content) in acts if etype == "uri_click"]
+            if not click_acts:
+                last_btn, last_ts, total = "", "", 0
+            else:
+                last_ts, last_content = max(click_acts, key=lambda x: x[0])
+                last_btn = label_click_content(last_content)
+                total    = len(click_acts)
+            return [user_id_cell(uid), u.get("display_name", ""), last_btn, last_ts, total]
+
+        # ── Build data ─────────────────────────────────────────────────────────
+        data = []
+        data.append(["統計期間",                                     period_str])
+        data.append(["新加入人數",                                   new_count])
+        data.append(["有點擊總人數",                                 total_ever_clicked])
+        data.append([stat_hyperlink(row_sec5_header, "當天有點擊人數"),   clicked_today_new])
+        data.append([stat_hyperlink(row_sec1_header, "當天沒有點擊人數"), no_click_today_new])
+        data.append([stat_hyperlink(row_sec3_header, "當天潛水人數"),     silent_today_new])
+        data.append(["封鎖人數（當天總封鎖）",                       block_total])
+        data.append(["當天加入封鎖",                                 block_same_day])
+
+        def add_section(title: str, col_headers: list, rows: list):
+            data.append([])
+            data.append([title])
+            data.append(col_headers)
+            data.extend(rows)
+
+        add_section("① 當天有互動但未點擊",
+                    ["user_id", "display_name", "大頭照URL", "加入時間"],
+                    [user_base_row(uid) for uid in sec1_uids])
+        add_section("② 有互動但未點擊（非當天加入）",
+                    ["user_id", "display_name", "大頭照URL", "加入時間"],
+                    [user_base_row(uid) for uid in sec2_uids])
+        add_section("③ 當天沉默成員（潛水）",
+                    ["user_id", "display_name", "大頭照URL", "加入時間"],
+                    [user_base_row(uid) for uid in sec3_uids])
+        add_section("④ 沉默成員（非當天加入）",
+                    ["user_id", "display_name", "大頭照URL", "加入時間"],
+                    [user_base_row(uid) for uid in sec4_uids])
+        add_section("⑤ 當天點擊者明細",
+                    ["user_id", "display_name", "最後點擊按鈕", "最後點擊時間", "總點擊次數"],
+                    [click_row(uid) for uid in sec5_uids])
+        add_section("⑥ 點擊者明細（非當天加入）",
+                    ["user_id", "display_name", "最後點擊按鈕", "最後點擊時間", "總點擊次數"],
+                    [click_row(uid) for uid in sec6_uids])
+
+        # ── Write ──────────────────────────────────────────────────────────────
+        ss.values().update(
             spreadsheetId=GSHEET_LINE_ID,
-            body={"requests": [{"addSheet": {"properties": {"title": sheet_tab}}}]}
+            range=f"'{sheet_tab}'!A1",
+            valueInputOption="USER_ENTERED",
+            body={"values": data}
         ).execute()
-        svc.spreadsheets().values().update(
-            spreadsheetId=GSHEET_LINE_ID,
-            range=f"{sheet_tab}!A1",
-            valueInputOption="RAW",
-            body={"values": report_data}
-        ).execute()
-        print(f"[report] {sheet_tab}: {total} users, {clicked} clicked")
+
+        print(f"[report] {sheet_tab}: new={new_count}, clicked_today={clicked_today_new}, "
+              f"①={len(sec1_uids)} ②={len(sec2_uids)} ③={len(sec3_uids)} "
+              f"④={len(sec4_uids)} ⑤={len(sec5_uids)} ⑥={len(sec6_uids)}")
     except Exception as e:
+        import traceback
         print(f"[report] ERROR: {e}")
+        print(traceback.format_exc())
 
 def generate_daily_stats():
     """
