@@ -81,13 +81,17 @@ async def notify_tg_photo(photo_url: str, caption: str):
         return
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.post(
-                f"https://api.telegram.org/bot{NOTIFY_TG_TOKEN}/sendPhoto",
-                json={"chat_id": NOTIFY_TG_CHAT_ID, "photo": photo_url, "caption": caption, "parse_mode": "HTML"},
-                timeout=5
-            )
-            if r.status_code != 200:
-                await notify_tg(caption)
+            img_r = await client.get(photo_url, timeout=10)
+            if img_r.status_code == 200:
+                r = await client.post(
+                    f"https://api.telegram.org/bot{NOTIFY_TG_TOKEN}/sendDocument",
+                    data={"chat_id": NOTIFY_TG_CHAT_ID, "caption": caption, "parse_mode": "HTML"},
+                    files={"document": ("profile.jpg", img_r.content, "image/jpeg")},
+                    timeout=15
+                )
+                if r.status_code == 200:
+                    return
+            await notify_tg(caption)
     except Exception:
         await notify_tg(caption)
 
@@ -428,8 +432,27 @@ async def handle_follow(user_id: str):
     sheets_append("動作紀錄", [ts, user_id, display_name, "follow", ""])
     _recent_actions.append((ts, display_name, "follow"))
     log_to_personal_sheet(user_id, display_name, "follow", "", ts)
+    # Count follows since yesterday 22:00 TW and today 00:00 TW
+    now_tw = datetime.now(TZ_TW)
+    yesterday_22_tw = (now_tw.replace(hour=22, minute=0, second=0, microsecond=0) - timedelta(days=1))
+    today_00_tw = now_tw.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday_22_utc = yesterday_22_tw.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    today_00_utc = today_00_tw.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    count_22 = 0
+    count_00 = 0
+    try:
+        user_rows = sheets_get("用戶資料", "A:F")
+        for row in user_rows[1:]:
+            if len(row) > 5 and row[5]:
+                fa = row[5]
+                if fa >= yesterday_22_utc:
+                    count_22 += 1
+                if fa >= today_00_utc:
+                    count_00 += 1
+    except Exception:
+        pass
     pic = profile.get("pictureUrl", "")
-    caption = f"👤 新好友加入\n暱稱：{display_name}\nID：{user_id}"
+    caption = f"👤 新好友加入\n暱稱：{display_name}\nID：{user_id}\n昨天22開始: {count_22}\n今天00開始: {count_00}"
     if pic:
         await notify_tg_photo(pic, caption)
     else:
