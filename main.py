@@ -640,13 +640,13 @@ def generate_daily_report():
 
         new_count          = len(new_user_ids)
         clicked_today_new  = len(sec5_uids)
-        no_click_today_new = len(sec1_uids) + len(sec3_uids)
+        no_click_today_new = len(sec1_uids)
         silent_today_new   = len(sec3_uids)
 
         # ── Row position calculation ───────────────────────────────────────────
         STATS_ROWS = 8
-        section_sizes = [len(sec1_uids), len(sec2_uids), len(sec3_uids),
-                         len(sec4_uids), len(sec5_uids), len(sec6_uids)]
+        section_sizes = [len(sec5_uids), len(sec6_uids), len(sec1_uids),
+                         len(sec2_uids), len(sec3_uids), len(sec4_uids)]
 
         def section_header_row(idx: int) -> int:
             row = STATS_ROWS
@@ -655,9 +655,9 @@ def generate_daily_report():
             row += 1 + 1  # blank + header for this section
             return row
 
-        row_sec1_header = section_header_row(0)
-        row_sec3_header = section_header_row(2)
-        row_sec5_header = section_header_row(4)
+        row_stat_click_header  = section_header_row(0)  # ① 當天點擊者明細
+        row_stat_idle_header   = section_header_row(2)  # ③ 當天有互動但未點擊
+        row_stat_silent_header = section_header_row(4)  # ⑤ 當天沉默成員
 
         # ── Find or create the 日報 sheet ──────────────────────────────────────
         line_meta   = ss.get(spreadsheetId=GSHEET_LINE_ID).execute()
@@ -688,7 +688,7 @@ def generate_daily_report():
         def user_id_cell(uid: str) -> str:
             gid = get_personal_gid(uid)
             if gid is not None:
-                return f'=HYPERLINK("#gid={gid}&range=A1","{uid}")'
+                return f'=HYPERLINK("https://docs.google.com/spreadsheets/d/{GSHEET_PERSONAL_ID}/edit#gid={gid}&range=A1","{uid}")'
             return uid
 
         def label_click_content(content: str) -> str:
@@ -722,9 +722,9 @@ def generate_daily_report():
         data.append(["統計期間",                                         period_str])
         data.append(["新加入人數",                                       new_count])
         data.append(["點擊專員總人數",                                   total_ever_clicked])
-        data.append([stat_hyperlink(row_sec5_header, "當天點擊專員人數"), clicked_today_new])
-        data.append([stat_hyperlink(row_sec1_header, "當天閒逛人數"),     no_click_today_new])
-        data.append([stat_hyperlink(row_sec3_header, "當天潛水人數"),     silent_today_new])
+        data.append([stat_hyperlink(row_stat_click_header,  "當天點擊專員人數"), clicked_today_new])
+        data.append([stat_hyperlink(row_stat_idle_header,   "當天閒逛人數"),     no_click_today_new])
+        data.append([stat_hyperlink(row_stat_silent_header, "當天潛水人數"),     silent_today_new])
         data.append(["封鎖人數（當天總封鎖）",                           block_total])
         data.append(["當天加入封鎖",                                     block_same_day])
 
@@ -734,24 +734,24 @@ def generate_daily_report():
             data.append(col_headers)
             data.extend(rows)
 
-        add_section("① 當天有互動但未點擊",
-                    ["user_id", "display_name", "大頭照URL", "加入時間"],
-                    [user_base_row(uid) for uid in sec1_uids])
-        add_section("② 有互動但未點擊（非當天加入）",
-                    ["user_id", "display_name", "大頭照URL", "加入時間"],
-                    [user_base_row(uid) for uid in sec2_uids])
-        add_section("③ 當天沉默成員（潛水）",
-                    ["user_id", "display_name", "大頭照URL", "加入時間"],
-                    [user_base_row(uid) for uid in sec3_uids])
-        add_section("④ 沉默成員（非當天加入）",
-                    ["user_id", "display_name", "大頭照URL", "加入時間"],
-                    [user_base_row(uid) for uid in sec4_uids])
-        add_section("⑤ 當天點擊者明細",
+        add_section("① 當天點擊者明細",
                     ["user_id", "display_name", "最後點擊按鈕", "最後點擊時間", "總點擊次數"],
                     [click_row(uid) for uid in sec5_uids])
-        add_section("⑥ 點擊者明細（非當天加入）",
+        add_section("② 點擊者明細（非當天加入）",
                     ["user_id", "display_name", "最後點擊按鈕", "最後點擊時間", "總點擊次數"],
                     [click_row(uid) for uid in sec6_uids])
+        add_section("③ 當天有互動但未點擊",
+                    ["user_id", "display_name", "大頭照URL", "加入時間"],
+                    [user_base_row(uid) for uid in sec1_uids])
+        add_section("④ 有互動但未點擊（非當天加入）",
+                    ["user_id", "display_name", "大頭照URL", "加入時間"],
+                    [user_base_row(uid) for uid in sec2_uids])
+        add_section("⑤ 當天沉默成員（潛水）",
+                    ["user_id", "display_name", "大頭照URL", "加入時間"],
+                    [user_base_row(uid) for uid in sec3_uids])
+        add_section("⑥ 沉默成員（非當天加入）",
+                    ["user_id", "display_name", "大頭照URL", "加入時間"],
+                    [user_base_row(uid) for uid in sec4_uids])
 
         # ── Write ──────────────────────────────────────────────────────────────
         ss.values().update(
