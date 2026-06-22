@@ -26,6 +26,43 @@ NOTIFY_TG_CHAT_ID = os.environ.get("NOTIFY_TG_CHAT_ID", "")
 
 TZ_TW = pytz.timezone("Asia/Taipei")
 
+KEYWORD_RESPONSES = {
+    "1x1": (
+        "收到您的諮詢預約了！✨\n"
+        "為了提供您最精準、最詳細的規劃，我們將由經營顧問專員為您進行 1對1 線上解答。\n\n"
+        "🎁 加好友專屬福利：\n"
+        "現在添加專員，立即獲得：\n"
+        "量身訂做的專屬電商藍圖\n"
+        "上千會員的實戰成功案例\n\n"
+        "👇 請立刻點擊下方圖片 👇\n"
+        "轉跳加入專員的個人 LINE，發送訊息「想了解電商」，專員將優先為您安排諮詢時間！"
+    ),
+    "FAQ": (
+        "常見問題 FAQ\n\n"
+        "1. 需要會員費嗎？\n"
+        "💡 完全不用！諮詢、輔導與合作皆不收會員費。\n"
+        "2. 需要囤貨嗎？\n"
+        "💡 不用囤貨！採用「雲倉模式」，有訂單再出貨、零庫存。\n"
+        "3. 警示戶可以合作嗎？\n"
+        "💡 可以合作！ 我們有合法結算方案，不影響您的收益。\n"
+        "4. 沒有經驗可以做嗎？\n"
+        "💡 完全可以！ 手把手實戰帶教，90% 賣家都是從零開始。\n"
+        "5. 上班族/兼職有時間做嗎？\n"
+        "💡 每天不用 1 小時！ 流程系統化，利用下班零碎時間即可。\n"
+        "6. 資金很少也能開始嗎？\n"
+        "💡 可以！ 不用大量批貨，啟動資金極低、低風險。\n"
+        "7. 我還有其他問題？\n"
+        "👇 直接點擊下方圖片 加專員 LINE，一對一為您詳細解答！"
+    ),
+    "扶植金": (
+        "🎁 新手扶植金限量開放中！\n"
+        "我們特別為首次合作的會員準備補助扶植金，讓您在零壓力的情況下就能開始跨境電商事業！\n"
+        "無論您目前資金是否寬裕，這筆基礎資金都能幫助您快速上手、解決初期壓力，並親身體驗跨境電商的驚人魅力與收益。\n"
+        "⚠️ 名額有限，先搶先贏！\n"
+        "👇 點擊下方圖片立即加入專員，領取您的扶植金資格！"
+    ),
+}
+
 async def notify_tg(text: str):
     if not NOTIFY_TG_TOKEN or not NOTIFY_TG_CHAT_ID:
         return
@@ -391,6 +428,17 @@ async def handle_message(user_id: str, reply_token: str, text: str):
         sheets_append("動作紀錄", [ts, user_id, dname, "assign", agent["agent_name"]])
         _recent_actions.append((ts, dname, f"assign:{agent['agent_name']}"))
         await notify_tg(f"🎯 專員分配\n用戶：{dname}\n指派：{agent['agent_name']}")
+        return
+
+    if text in KEYWORD_RESPONSES:
+        agent = assign_agent(user_id, dname)
+        text_msg = {"type": "text", "text": KEYWORD_RESPONSES[text]}
+        flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"])
+        await line_reply(reply_token, [text_msg, flex_msg])
+        sheets_append("動作紀錄", [ts, user_id, dname, "keyword", text])
+        _recent_actions.append((ts, dname, text))
+        log_to_personal_sheet(user_id, dname, "keyword", text, ts)
+        await notify_tg(f"💬 關鍵字：{text}\n用戶：{dname}\n指派：{agent['agent_name']}")
         return
 
     sheets_append("動作紀錄", [ts, user_id, dname, "text", text])
