@@ -76,6 +76,21 @@ async def notify_tg(text: str):
     except Exception:
         pass
 
+async def notify_tg_photo(photo_url: str, caption: str):
+    if not NOTIFY_TG_TOKEN or not NOTIFY_TG_CHAT_ID:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"https://api.telegram.org/bot{NOTIFY_TG_TOKEN}/sendPhoto",
+                json={"chat_id": NOTIFY_TG_CHAT_ID, "photo": photo_url, "caption": caption, "parse_mode": "HTML"},
+                timeout=5
+            )
+            if r.status_code != 200:
+                await notify_tg(caption)
+    except Exception:
+        await notify_tg(caption)
+
 _sheets_svc = None
 _recent_actions: deque = deque(maxlen=20)
 _rr_index: int = 0
@@ -413,7 +428,12 @@ async def handle_follow(user_id: str):
     sheets_append("動作紀錄", [ts, user_id, display_name, "follow", ""])
     _recent_actions.append((ts, display_name, "follow"))
     log_to_personal_sheet(user_id, display_name, "follow", "", ts)
-    await notify_tg(f"👤 新好友加入\n暱稱：{display_name}\nID：{user_id}")
+    pic = profile.get("pictureUrl", "")
+    caption = f"👤 新好友加入\n暱稱：{display_name}\nID：{user_id}"
+    if pic:
+        await notify_tg_photo(pic, caption)
+    else:
+        await notify_tg(caption)
 
 async def handle_unfollow(user_id: str):
     ts = now_iso()
