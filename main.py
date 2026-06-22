@@ -532,7 +532,6 @@ def generate_daily_report():
     Runs at 22:00 Asia/Taipei. Covers prev 22:00 → today 22:00.
     Writes a 6-section structured 日報 with stat hyperlinks and per-user click details.
     """
-    import re as _re
     try:
         now_tw  = datetime.now(TZ_TW)
         end_tw  = now_tw.replace(hour=22, minute=0, second=0, microsecond=0)
@@ -580,6 +579,10 @@ def generate_daily_report():
                 period_actions.append((ts, uid, etype, content))
 
         # ── Get personal sheet gid map ─────────────────────────────────────────
+        # Personal sheets are named "display_name(last8chars)" or "(last8chars)".
+        # Map last-8-char suffix → gid. If a user has no matching personal sheet,
+        # the uid cell falls back to plain text (no hyperlink) to avoid "無效的範圍".
+        import re as _re
         suffix_to_gid: dict = {}
         if GSHEET_PERSONAL_ID:
             personal_meta = ss.get(spreadsheetId=GSHEET_PERSONAL_ID).execute()
@@ -592,7 +595,7 @@ def generate_daily_report():
 
         def get_personal_gid(uid: str):
             suffix = uid[-8:] if len(uid) >= 8 else uid
-            return suffix_to_gid.get(suffix)
+            return suffix_to_gid.get(suffix)  # None if no personal sheet exists
 
         # ── Classify users ─────────────────────────────────────────────────────
         new_user_ids: set = set()
@@ -716,14 +719,14 @@ def generate_daily_report():
 
         # ── Build data ─────────────────────────────────────────────────────────
         data = []
-        data.append(["統計期間",                                     period_str])
-        data.append(["新加入人數",                                   new_count])
-        data.append(["有點擊總人數",                                 total_ever_clicked])
-        data.append([stat_hyperlink(row_sec5_header, "當天有點擊人數"),   clicked_today_new])
-        data.append([stat_hyperlink(row_sec1_header, "當天沒有點擊人數"), no_click_today_new])
+        data.append(["統計期間",                                         period_str])
+        data.append(["新加入人數",                                       new_count])
+        data.append(["點擊專員總人數",                                   total_ever_clicked])
+        data.append([stat_hyperlink(row_sec5_header, "當天點擊專員人數"), clicked_today_new])
+        data.append([stat_hyperlink(row_sec1_header, "當天閒逛人數"),     no_click_today_new])
         data.append([stat_hyperlink(row_sec3_header, "當天潛水人數"),     silent_today_new])
-        data.append(["封鎖人數（當天總封鎖）",                       block_total])
-        data.append(["當天加入封鎖",                                 block_same_day])
+        data.append(["封鎖人數（當天總封鎖）",                           block_total])
+        data.append(["當天加入封鎖",                                     block_same_day])
 
         def add_section(title: str, col_headers: list, rows: list):
             data.append([])
