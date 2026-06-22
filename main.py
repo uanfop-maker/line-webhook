@@ -221,7 +221,7 @@ def assign_agent(user_id: str, display_name: str) -> dict:
         "agent_link": target[3] if len(target) > 3 else ""
     }
 
-def build_assign_flex(agent_name: str, agent_link: str, user_id: str = "") -> dict:
+def build_assign_flex(agent_name: str, agent_link: str, user_id: str = "", src: str = "") -> dict:
     msg = {
         "type": "flex",
         "altText": f"您的專屬顧問是 {agent_name}",
@@ -268,7 +268,7 @@ def build_assign_flex(agent_name: str, agent_link: str, user_id: str = "") -> di
                     "action": {
                         "type": "uri",
                         "label": "➡️ 立即聯絡",
-                        "uri": f"https://line-dda.zeabur.app/track?to={urllib.parse.quote(agent_link, safe='')}&label=%E5%8A%A0%E5%85%A5%E5%B0%88%E5%93%A1&uid={user_id}&agent={urllib.parse.quote(agent_name, safe='')}"
+                        "uri": f"https://line-dda.zeabur.app/track?to={urllib.parse.quote(agent_link, safe='')}&label=%E5%8A%A0%E5%85%A5%E5%B0%88%E5%93%A1&uid={user_id}&agent={urllib.parse.quote(agent_name, safe='')}&src={urllib.parse.quote(src, safe='')}"
                     }
                 }
             ]
@@ -431,7 +431,7 @@ async def handle_message(user_id: str, reply_token: str, text: str):
 
     if text == "__ASSIGN__":
         agent = assign_agent(user_id, dname)
-        flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"], user_id=user_id)
+        flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"], user_id=user_id, src="assign")
         await line_reply(reply_token, [flex_msg])
         sheets_append("動作紀錄", [ts, user_id, dname, "assign", agent["agent_name"]])
         _recent_actions.append((ts, dname, f"assign:{agent['agent_name']}"))
@@ -440,7 +440,8 @@ async def handle_message(user_id: str, reply_token: str, text: str):
     if text in KEYWORD_RESPONSES:
         agent = assign_agent(user_id, dname)
         text_msg = {"type": "text", "text": KEYWORD_RESPONSES[text]}
-        flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"], user_id=user_id)
+        src_label = text.strip("_")
+        flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"], user_id=user_id, src=src_label)
         await line_reply(reply_token, [text_msg, flex_msg])
         sheets_append("動作紀錄", [ts, user_id, dname, "keyword", text])
         _recent_actions.append((ts, dname, text))
@@ -659,7 +660,7 @@ def health():
     return {"status": "ok"}
 
 @app.get("/track")
-async def track_page(to: str = "", label: str = "", uid: str = "", agent: str = ""):
+async def track_page(to: str = "", label: str = "", uid: str = "", agent: str = "", src: str = ""):
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -674,6 +675,7 @@ const liffId = {json.dumps(LIFF_ID)};
 const label = {json.dumps(label)};
 const uid = {json.dumps(uid)};
 const agent = {json.dumps(agent)};
+const src = {json.dumps(src)};
 
 async function main() {{
   let userId = '';
@@ -695,7 +697,8 @@ async function main() {{
         display_name: displayName,
         destination: destination,
         label: label,
-        agent: agent
+        agent: agent,
+        src: src
       }})
     }}).catch(() => {{}});
   }} catch(e) {{
@@ -703,7 +706,7 @@ async function main() {{
     fetch('/api/track', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{ user_id: userId || uid, display_name: '', destination: destination, label: label, agent: agent }})
+      body: JSON.stringify({{ user_id: userId || uid, display_name: '', destination: destination, label: label, agent: agent, src: src }})
     }}).catch(() => {{}});
   }}
   if (destination) window.location.href = destination;
@@ -722,6 +725,7 @@ class TrackPayload(BaseModel):
     destination: str = ""
     label: str = ""
     agent: str = ""
+    src: str = ""
 
 @app.post("/api/track")
 async def api_track(payload: TrackPayload):
@@ -730,12 +734,14 @@ async def api_track(payload: TrackPayload):
     if payload.label == "加入專員":
         name = payload.display_name or _user_cache.get(payload.user_id, "") or (f"用戶({payload.user_id[-8:]})" if payload.user_id else "匿名")
         agent_name = payload.agent or "未知"
+        src = payload.src or ""
         content = f"加入專員 → {agent_name}"
         sheets_append("動作紀錄", [ts, uid, name, "uri_click", content])
         _recent_actions.append((ts, name, content))
         if payload.user_id:
             log_to_personal_sheet(payload.user_id, name, "uri_click", content, ts)
-        await notify_tg(f"🔗 點擊專員連結\n用戶：{name}\n專員：{agent_name}")
+        src_line = f"\n來源按鈕：{src}" if src else ""
+        await notify_tg(f"🔗 點擊專員連結\n用戶：{name}\n專員：{agent_name}{src_line}")
         return {"status": "ok"}
     content = f"{payload.label} → {payload.destination}" if payload.label else payload.destination
     sheets_append("動作紀錄", [ts, uid, payload.display_name or "", "uri_click", content])
