@@ -181,8 +181,7 @@ async def line_reply(reply_token: str, messages: list):
 
 def assign_agent(user_id: str, display_name: str) -> dict:
     """Returns {'agent_name': str, 'agent_link': str} after assigning or finding existing"""
-    global _rr_index
-    rows = sheets_get("專員名單", "A:F")
+    rows = sheets_get("專員名單", "A:G")
     if not rows or len(rows) <= 1:
         return {"agent_name": "客服", "agent_link": ""}
 
@@ -197,20 +196,20 @@ def assign_agent(user_id: str, display_name: str) -> dict:
             }
 
     # Filter to only active (non-disabled) agents with a valid name and link
-    active_indices = [
-        i for i, row in enumerate(data_rows)
+    active_agents = [
+        (i, row, int(row[6]) if len(row) >= 7 and row[6] else 0)
+        for i, row in enumerate(data_rows)
         if (len(row) >= 2 and row[1].strip())  # must have agent_name
         and (len(row) >= 4 and row[3].strip())  # must have agent_link
         and not (len(row) >= 5 and str(row[4]).upper() == "TRUE")  # not disabled
     ]
 
-    if not active_indices:
+    if not active_agents:
         return {"agent_name": "客服", "agent_link": ""}
 
-    # Round-robin among active agents
-    idx = active_indices[_rr_index % len(active_indices)]
-    _rr_index += 1
-    target = data_rows[idx]
+    # Assign to agent with fewest 提供次數; use row order as tiebreaker
+    active_agents.sort(key=lambda x: (x[2], x[0]))
+    idx, target, current_count = active_agents[0]
 
     # Add user_id to this agent's line_user_ids (F column)
     svc = get_sheets()
@@ -223,6 +222,13 @@ def assign_agent(user_id: str, display_name: str) -> dict:
         range=f"專員名單!F{row_num}",
         valueInputOption="RAW",
         body={"values": [[new_ids]]}
+    ).execute()
+    # Increment 提供次數 (G column)
+    svc.spreadsheets().values().update(
+        spreadsheetId=SHEET_ID,
+        range=f"專員名單!G{row_num}",
+        valueInputOption="RAW",
+        body={"values": [[current_count + 1]]}
     ).execute()
 
     # Update 用戶資料 assigned_agent column (H)
