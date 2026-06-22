@@ -427,7 +427,6 @@ async def handle_message(user_id: str, reply_token: str, text: str):
         await line_reply(reply_token, [flex_msg])
         sheets_append("動作紀錄", [ts, user_id, dname, "assign", agent["agent_name"]])
         _recent_actions.append((ts, dname, f"assign:{agent['agent_name']}"))
-        await notify_tg(f"🎯 專員分配\n用戶：{dname}\n指派：{agent['agent_name']}")
         return
 
     if text in KEYWORD_RESPONSES:
@@ -438,7 +437,6 @@ async def handle_message(user_id: str, reply_token: str, text: str):
         sheets_append("動作紀錄", [ts, user_id, dname, "keyword", text])
         _recent_actions.append((ts, dname, text))
         log_to_personal_sheet(user_id, dname, "keyword", text, ts)
-        await notify_tg(f"💬 關鍵字：{text}\n用戶：{dname}\n指派：{agent['agent_name']}")
         return
 
     sheets_append("動作紀錄", [ts, user_id, dname, "text", text])
@@ -460,7 +458,6 @@ async def handle_postback(user_id: str, data: str, reply_token: str = ""):
         sheets_append("動作紀錄", [ts, user_id, dname, "assign", result["agent_name"]])
         _recent_actions.append((ts, dname, f"assign:{result['agent_name']}"))
         log_to_personal_sheet(user_id, dname, "assign", result["agent_name"], ts)
-        await notify_tg(f"🎯 專員分配\n用戶：{dname}\n指派：{result['agent_name']}")
         return
 
     sheets_append("動作紀錄", [ts, user_id, dname, "postback", data])
@@ -629,15 +626,6 @@ def generate_daily_stats():
         ).execute()
 
         print(f"[daily_stats] {date_label}: join={join_count}, block_same={block_same_day}, block_other={block_other_day}, 1x1={click_1x1}, faq={click_faq}, money={click_money}")
-        asyncio.ensure_future(notify_tg(
-            f"📊 每日統計 {date_label}\n"
-            f"加入：{join_count} 人\n"
-            f"封鎖（當天加入）：{block_same_day} 人\n"
-            f"封鎖（非當天加入）：{block_other_day} 人\n"
-            f"1x1 點擊：{click_1x1} 次\n"
-            f"FAQ 點擊：{click_faq} 次\n"
-            f"money 點擊：{click_money} 次"
-        ))
     except Exception as e:
         print(f"[daily_stats] ERROR: {e}")
 
@@ -732,26 +720,10 @@ async def api_track(payload: TrackPayload):
     if payload.user_id:
         dname = payload.display_name or payload.user_id
         log_to_personal_sheet(payload.user_id, dname, "uri_click", content, ts)
-    # Capture context before appending this click
-    context = list(_recent_actions)[-3:]
-    # Append this click to deque
     _recent_actions.append((ts, payload.display_name or "匿名", content))
-    if payload.label or payload.destination:
-        this_content = payload.label or payload.destination
-        # De-duplicate: skip if previous action has the same content
-        if context and context[-1][2] == this_content:
-            pass  # skip notification
-        else:
-            ctx_lines = "\n".join(
-                f"{row[0][-8:]} | {row[1] or '匿名'} | {row[2]}"
-                for row in context
-            ) if context else "（無前置動作）"
-            name = payload.display_name or "匿名"
-            btn = payload.label or payload.destination
-            await notify_tg(
-                f"🖱️ 按鈕點擊：{btn}\n用戶：{name}\n"
-                f"────────────\n前{len(context)}筆動作：\n{ctx_lines}"
-            )
+    if payload.label == "加入專員":
+        name = payload.display_name or "匿名"
+        await notify_tg(f"🔗 點擊專員連結\n用戶：{name}")
     return {"status": "ok"}
 
 
