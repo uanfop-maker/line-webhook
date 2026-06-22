@@ -452,7 +452,8 @@ async def handle_follow(user_id: str):
     except Exception:
         pass
     pic = profile.get("pictureUrl", "")
-    caption = f"👤 新好友加入\n暱稱： {display_name}\nID： {user_id}\n昨天22開始: {count_22}\n今天00開始: {count_00}"
+    safe_name = display_name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    caption = f"👤 新好友加入\n暱稱： <code>{safe_name}</code>\nID： <code>{user_id}</code>\n昨天22開始: {count_22}\n今天00開始: {count_00}"
     if pic:
         await notify_tg_photo(pic, caption)
     else:
