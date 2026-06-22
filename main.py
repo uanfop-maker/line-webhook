@@ -626,8 +626,8 @@ def generate_daily_report():
         sec6_uids = sorted(uid for uid in old_user_ids if uid in uids_clicked)
 
         # ── Statistics ─────────────────────────────────────────────────────────
-        total_ever_clicked = len({uid for uid, acts in user_period_actions.items()
-                                   if any(e == "uri_click" for _, e, _ in acts)})
+        # Use sec5+sec6 so 總人數 matches the displayed ①+② rows (ghost uids excluded)
+        total_ever_clicked = len(sec5_uids) + len(sec6_uids)
         block_total    = 0
         block_same_day = 0
         for uid, u in users.items():
