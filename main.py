@@ -268,7 +268,7 @@ def build_assign_flex(agent_name: str, agent_link: str, user_id: str = "") -> di
                     "action": {
                         "type": "uri",
                         "label": "➡️ 立即聯絡",
-                        "uri": f"https://line-dda.zeabur.app/track?to={urllib.parse.quote(agent_link, safe='')}&label=%E5%8A%A0%E5%85%A5%E5%B0%88%E5%93%A1&uid={user_id}"
+                        "uri": f"https://line-dda.zeabur.app/track?to={urllib.parse.quote(agent_link, safe='')}&label=%E5%8A%A0%E5%85%A5%E5%B0%88%E5%93%A1&uid={user_id}&agent={urllib.parse.quote(agent_name, safe='')}"
                     }
                 }
             ]
@@ -659,7 +659,7 @@ def health():
     return {"status": "ok"}
 
 @app.get("/track")
-async def track_page(to: str = "", label: str = "", uid: str = ""):
+async def track_page(to: str = "", label: str = "", uid: str = "", agent: str = ""):
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -673,6 +673,7 @@ const destination = {json.dumps(to)};
 const liffId = {json.dumps(LIFF_ID)};
 const label = {json.dumps(label)};
 const uid = {json.dumps(uid)};
+const agent = {json.dumps(agent)};
 
 async function main() {{
   let userId = '';
@@ -693,7 +694,8 @@ async function main() {{
         user_id: userId || uid,
         display_name: displayName,
         destination: destination,
-        label: label
+        label: label,
+        agent: agent
       }})
     }}).catch(() => {{}});
   }} catch(e) {{
@@ -701,7 +703,7 @@ async function main() {{
     fetch('/api/track', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{ user_id: userId || uid, display_name: '', destination: destination, label: label }})
+      body: JSON.stringify({{ user_id: userId || uid, display_name: '', destination: destination, label: label, agent: agent }})
     }}).catch(() => {{}});
   }}
   if (destination) window.location.href = destination;
@@ -719,20 +721,28 @@ class TrackPayload(BaseModel):
     display_name: str = ""
     destination: str = ""
     label: str = ""
+    agent: str = ""
 
 @app.post("/api/track")
 async def api_track(payload: TrackPayload):
     ts = now_iso()
     uid = payload.user_id or "anonymous"
+    if payload.label == "加入專員":
+        name = payload.display_name or _user_cache.get(payload.user_id, "") or "匿名"
+        agent_name = payload.agent or "未知"
+        content = f"加入專員 → {agent_name}"
+        sheets_append("動作紀錄", [ts, uid, name, "uri_click", content])
+        _recent_actions.append((ts, name, content))
+        if payload.user_id:
+            log_to_personal_sheet(payload.user_id, name, "uri_click", content, ts)
+        await notify_tg(f"🔗 點擊專員連結\n用戶：{name}\n專員：{agent_name}")
+        return {"status": "ok"}
     content = f"{payload.label} → {payload.destination}" if payload.label else payload.destination
     sheets_append("動作紀錄", [ts, uid, payload.display_name or "", "uri_click", content])
     if payload.user_id:
         dname = payload.display_name or payload.user_id
         log_to_personal_sheet(payload.user_id, dname, "uri_click", content, ts)
     _recent_actions.append((ts, payload.display_name or "匿名", content))
-    if payload.label == "加入專員":
-        name = payload.display_name or "匿名"
-        await notify_tg(f"🔗 點擊專員連結\n用戶：{name}")
     return {"status": "ok"}
 
 
