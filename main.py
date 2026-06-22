@@ -163,40 +163,48 @@ async def line_reply(reply_token: str, messages: list):
 def assign_agent(user_id: str, display_name: str) -> dict:
     """Returns {'agent_name': str, 'agent_link': str} after assigning or finding existing"""
     global _rr_index
-    rows = sheets_get("專員名單", "A:E")
+    rows = sheets_get("專員名單", "A:F")
     if not rows or len(rows) <= 1:
         return {"agent_name": "客服", "agent_link": ""}
 
     data_rows = rows[1:]  # skip header
 
-    # Check if already assigned
+    # Check if already assigned (check F column, index 5)
     for i, row in enumerate(data_rows):
-        if len(row) >= 5 and user_id in row[4].split(","):
+        if len(row) >= 6 and user_id in row[5].split(","):
             return {
                 "agent_name": row[1] if len(row) > 1 else row[0],
                 "agent_link": row[3] if len(row) > 3 else ""
             }
 
-    # Round-robin assignment
-    idx = _rr_index % len(data_rows)
+    # Filter to only active (non-disabled) agents
+    active_indices = [
+        i for i, row in enumerate(data_rows)
+        if not (len(row) >= 5 and str(row[4]).upper() == "TRUE")
+    ]
+
+    if not active_indices:
+        return {"agent_name": "客服", "agent_link": ""}
+
+    # Round-robin among active agents
+    idx = active_indices[_rr_index % len(active_indices)]
     _rr_index += 1
     target = data_rows[idx]
 
-    # Add user_id to this agent's line_user_ids
+    # Add user_id to this agent's line_user_ids (F column)
     svc = get_sheets()
     SHEET_ID = GSHEET_LINE_ID
-    existing_ids = target[4].strip() if len(target) >= 5 and target[4] else ""
+    existing_ids = target[5].strip() if len(target) >= 6 and target[5] else ""
     new_ids = f"{existing_ids},{user_id}".lstrip(",") if existing_ids else user_id
-    # Row number in sheet = idx + 2 (1 for header, 1 for 1-based indexing)
-    row_num = idx + 2
+    row_num = idx + 2  # +1 for header, +1 for 1-based
     svc.spreadsheets().values().update(
         spreadsheetId=SHEET_ID,
-        range=f"專員名單!E{row_num}",
+        range=f"專員名單!F{row_num}",
         valueInputOption="RAW",
         body={"values": [[new_ids]]}
     ).execute()
 
-    # Also update 用戶資料 assigned_agent column (H)
+    # Update 用戶資料 assigned_agent column (H)
     user_rows = sheets_get("用戶資料", "A:H")
     for j, urow in enumerate(user_rows[1:], start=2):
         if urow and urow[0] == user_id:
@@ -275,9 +283,9 @@ def find_user_row(user_id: str) -> Optional[int]:
     return None
 
 def get_assigned_agent(user_id: str) -> str:
-    rows = sheets_get("專員名單", "A:E")
+    rows = sheets_get("專員名單", "A:F")
     for row in rows[1:]:
-        if len(row) >= 5 and user_id in row[4].split(","):
+        if len(row) >= 6 and user_id in row[5].split(","):
             return row[1] if len(row) > 1 else row[0]
     return ""
 
