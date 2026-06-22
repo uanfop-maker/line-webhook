@@ -187,9 +187,11 @@ def assign_agent(user_id: str, display_name: str) -> dict:
 
     data_rows = rows[1:]  # skip header
 
-    # Check if already assigned (check F column, index 5)
+    # New column layout: A=owner B=agent_name C=agent_id D=agent_link E=提供次數(4) F=停用(5) G=line_user_ids(6)
+
+    # Check if already assigned (check G column, index 6)
     for i, row in enumerate(data_rows):
-        if len(row) >= 6 and user_id in row[5].split(","):
+        if len(row) >= 7 and user_id in row[6].split(","):
             return {
                 "agent_name": row[1] if len(row) > 1 else row[0],
                 "agent_link": row[3] if len(row) > 3 else ""
@@ -197,11 +199,11 @@ def assign_agent(user_id: str, display_name: str) -> dict:
 
     # Filter to only active (non-disabled) agents with a valid name and link
     active_agents = [
-        (i, row, int(row[6]) if len(row) >= 7 and row[6] else 0)
+        (i, row, int(row[4]) if len(row) >= 5 and row[4] else 0)
         for i, row in enumerate(data_rows)
         if (len(row) >= 2 and row[1].strip())  # must have agent_name
         and (len(row) >= 4 and row[3].strip())  # must have agent_link
-        and not (len(row) >= 5 and str(row[4]).upper() == "TRUE")  # not disabled
+        and not (len(row) >= 6 and str(row[5]).upper() == "TRUE")  # not disabled (F col)
     ]
 
     if not active_agents:
@@ -211,22 +213,22 @@ def assign_agent(user_id: str, display_name: str) -> dict:
     active_agents.sort(key=lambda x: (x[2], x[0]))
     idx, target, current_count = active_agents[0]
 
-    # Add user_id to this agent's line_user_ids (F column)
+    # Add user_id to this agent's line_user_ids (G column)
     svc = get_sheets()
     SHEET_ID = GSHEET_LINE_ID
-    existing_ids = target[5].strip() if len(target) >= 6 and target[5] else ""
+    existing_ids = target[6].strip() if len(target) >= 7 and target[6] else ""
     new_ids = f"{existing_ids},{user_id}".lstrip(",") if existing_ids else user_id
     row_num = idx + 2  # +1 for header, +1 for 1-based
     svc.spreadsheets().values().update(
         spreadsheetId=SHEET_ID,
-        range=f"專員名單!F{row_num}",
+        range=f"專員名單!G{row_num}",
         valueInputOption="RAW",
         body={"values": [[new_ids]]}
     ).execute()
-    # Increment 提供次數 (G column)
+    # Increment 提供次數 (E column)
     svc.spreadsheets().values().update(
         spreadsheetId=SHEET_ID,
-        range=f"專員名單!G{row_num}",
+        range=f"專員名單!E{row_num}",
         valueInputOption="RAW",
         body={"values": [[current_count + 1]]}
     ).execute()
@@ -310,9 +312,9 @@ def find_user_row(user_id: str) -> Optional[int]:
     return None
 
 def get_assigned_agent(user_id: str) -> str:
-    rows = sheets_get("專員名單", "A:F")
+    rows = sheets_get("專員名單", "A:G")
     for row in rows[1:]:
-        if len(row) >= 6 and user_id in row[5].split(","):
+        if len(row) >= 7 and user_id in row[6].split(","):
             return row[1] if len(row) > 1 else row[0]
     return ""
 
