@@ -221,7 +221,7 @@ def assign_agent(user_id: str, display_name: str) -> dict:
         "agent_link": target[3] if len(target) > 3 else ""
     }
 
-def build_assign_flex(agent_name: str, agent_link: str) -> dict:
+def build_assign_flex(agent_name: str, agent_link: str, user_id: str = "") -> dict:
     msg = {
         "type": "flex",
         "altText": f"您的專屬顧問是 {agent_name}",
@@ -268,7 +268,7 @@ def build_assign_flex(agent_name: str, agent_link: str) -> dict:
                     "action": {
                         "type": "uri",
                         "label": "➡️ 立即聯絡",
-                        "uri": f"https://line-dda.zeabur.app/track?to={urllib.parse.quote(agent_link, safe='')}&label=%E5%8A%A0%E5%85%A5%E5%B0%88%E5%93%A1"
+                        "uri": f"https://line-dda.zeabur.app/track?to={urllib.parse.quote(agent_link, safe='')}&label=%E5%8A%A0%E5%85%A5%E5%B0%88%E5%93%A1&uid={user_id}"
                     }
                 }
             ]
@@ -431,7 +431,7 @@ async def handle_message(user_id: str, reply_token: str, text: str):
 
     if text == "__ASSIGN__":
         agent = assign_agent(user_id, dname)
-        flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"])
+        flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"], user_id=user_id)
         await line_reply(reply_token, [flex_msg])
         sheets_append("動作紀錄", [ts, user_id, dname, "assign", agent["agent_name"]])
         _recent_actions.append((ts, dname, f"assign:{agent['agent_name']}"))
@@ -440,7 +440,7 @@ async def handle_message(user_id: str, reply_token: str, text: str):
     if text in KEYWORD_RESPONSES:
         agent = assign_agent(user_id, dname)
         text_msg = {"type": "text", "text": KEYWORD_RESPONSES[text]}
-        flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"])
+        flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"], user_id=user_id)
         await line_reply(reply_token, [text_msg, flex_msg])
         sheets_append("動作紀錄", [ts, user_id, dname, "keyword", text])
         _recent_actions.append((ts, dname, text))
@@ -460,7 +460,7 @@ async def handle_postback(user_id: str, data: str, reply_token: str = ""):
 
     if data == "__ASSIGN__":
         result = assign_agent(user_id, dname)
-        flex_msg = build_assign_flex(result["agent_name"], result["agent_link"])
+        flex_msg = build_assign_flex(result["agent_name"], result["agent_link"], user_id=user_id)
         if reply_token:
             await line_reply(reply_token, [flex_msg])
         sheets_append("動作紀錄", [ts, user_id, dname, "assign", result["agent_name"]])
@@ -659,7 +659,7 @@ def health():
     return {"status": "ok"}
 
 @app.get("/track")
-async def track_page(to: str = "", label: str = ""):
+async def track_page(to: str = "", label: str = "", uid: str = ""):
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -672,6 +672,7 @@ async def track_page(to: str = "", label: str = ""):
 const destination = {json.dumps(to)};
 const liffId = {json.dumps(LIFF_ID)};
 const label = {json.dumps(label)};
+const uid = {json.dumps(uid)};
 
 async function main() {{
   let userId = '';
@@ -689,18 +690,18 @@ async function main() {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{
-        user_id: userId,
+        user_id: userId || uid,
         display_name: displayName,
         destination: destination,
         label: label
       }})
     }}).catch(() => {{}});
   }} catch(e) {{
-    // Still record anonymously on error
+    // Still record with uid fallback on error
     fetch('/api/track', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{ user_id: '', display_name: '', destination: destination, label: label }})
+      body: JSON.stringify({{ user_id: userId || uid, display_name: '', destination: destination, label: label }})
     }}).catch(() => {{}});
   }}
   if (destination) window.location.href = destination;
