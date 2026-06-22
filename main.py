@@ -1,4 +1,4 @@
-import os, json, hashlib, hmac, base64, asyncio
+import os, json, hashlib, hmac, base64, asyncio, urllib.parse
 from collections import deque
 import datetime as dt
 from datetime import datetime, timezone, timedelta
@@ -260,7 +260,7 @@ def build_assign_flex(agent_name: str, agent_link: str) -> dict:
                     "action": {
                         "type": "uri",
                         "label": "➡️ 立即聯絡",
-                        "uri": agent_link
+                        "uri": f"https://line-dda.zeabur.app/track?to={urllib.parse.quote(agent_link, safe='')}&label=%E5%8A%A0%E5%85%A5%E5%B0%88%E5%93%A1"
                     }
                 }
             ]
