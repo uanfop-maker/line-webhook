@@ -196,10 +196,12 @@ def assign_agent(user_id: str, display_name: str) -> dict:
                 "agent_link": row[3] if len(row) > 3 else ""
             }
 
-    # Filter to only active (non-disabled) agents
+    # Filter to only active (non-disabled) agents with a valid name and link
     active_indices = [
         i for i, row in enumerate(data_rows)
-        if not (len(row) >= 5 and str(row[4]).upper() == "TRUE")
+        if (len(row) >= 2 and row[1].strip())  # must have agent_name
+        and (len(row) >= 4 and row[3].strip())  # must have agent_link
+        and not (len(row) >= 5 and str(row[4]).upper() == "TRUE")  # not disabled
     ]
 
     if not active_indices:
