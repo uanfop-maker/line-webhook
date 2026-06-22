@@ -389,7 +389,7 @@ async def get_or_fetch_display_name(user_id: str) -> str:
 
 _personal_tabs: set = set()  # cache of created tab names
 
-def log_to_personal_sheet(user_id: str, display_name: str, event_type: str, content: str, ts: str):
+def log_to_personal_sheet(user_id: str, display_name: str, event_type: str, content: str, ts: str, pic_url: str = ""):
     if not GSHEET_PERSONAL_ID:
         return
     short_id = user_id[-8:] if len(user_id) >= 8 else user_id
@@ -400,16 +400,48 @@ def log_to_personal_sheet(user_id: str, display_name: str, event_type: str, cont
         ss = svc.spreadsheets().get(spreadsheetId=GSHEET_PERSONAL_ID).execute()
         existing = {s["properties"]["title"] for s in ss["sheets"]}
         if tab_name not in existing:
-            svc.spreadsheets().batchUpdate(
+            res = svc.spreadsheets().batchUpdate(
                 spreadsheetId=GSHEET_PERSONAL_ID,
                 body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]}
             ).execute()
-            # Write header
+            new_gid = res["replies"][0]["addSheet"]["properties"]["sheetId"]
+            # Apply avatar formatting: row height, column width, freeze rows, font size
+            svc.spreadsheets().batchUpdate(
+                spreadsheetId=GSHEET_PERSONAL_ID,
+                body={"requests": [
+                    # Row 1 height = 131px
+                    {"updateDimensionProperties": {
+                        "range": {"sheetId": new_gid, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
+                        "properties": {"pixelSize": 131}, "fields": "pixelSize"
+                    }},
+                    # Column A width = 131px
+                    {"updateDimensionProperties": {
+                        "range": {"sheetId": new_gid, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
+                        "properties": {"pixelSize": 131}, "fields": "pixelSize"
+                    }},
+                    # Freeze first 2 rows
+                    {"updateSheetProperties": {
+                        "properties": {"sheetId": new_gid, "gridProperties": {"frozenRowCount": 2}},
+                        "fields": "gridProperties.frozenRowCount"
+                    }},
+                    # B1 font size = 30
+                    {"repeatCell": {
+                        "range": {"sheetId": new_gid, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 1, "endColumnIndex": 2},
+                        "cell": {"userEnteredFormat": {"textFormat": {"fontSize": 30}}},
+                        "fields": "userEnteredFormat.textFormat.fontSize"
+                    }}
+                ]}
+            ).execute()
+            # Write row 1 (avatar + name) and row 2 (header)
+            avatar_formula = f'=IMAGE("{pic_url}",4,131,131)' if pic_url else ""
             svc.spreadsheets().values().update(
                 spreadsheetId=GSHEET_PERSONAL_ID,
-                range=f"{tab_name}!A1",
-                valueInputOption="RAW",
-                body={"values": [["時間(UTC)", "動作類型", "內容", "user_id"]]}
+                range=f"'{tab_name}'!A1",
+                valueInputOption="USER_ENTERED",
+                body={"values": [
+                    [avatar_formula, display_name],           # row 1: avatar, name
+                    ["時間(UTC)", "動作類型", "內容", "user_id"]  # row 2: header
+                ]}
             ).execute()
         _personal_tabs.add(tab_name)
     # Append action
@@ -441,7 +473,7 @@ async def handle_follow(user_id: str):
     _user_cache[user_id] = display_name
     sheets_append("動作紀錄", [ts, user_id, display_name, "follow", ""])
     _recent_actions.append((ts, display_name, "follow"))
-    log_to_personal_sheet(user_id, display_name, "follow", "", ts)
+    log_to_personal_sheet(user_id, display_name, "follow", "", ts, profile.get("pictureUrl", ""))
     # Count follows since yesterday 22:00 TW and today 00:00 TW
     now_tw = datetime.now(TZ_TW)
     yesterday_22_tw = (now_tw.replace(hour=22, minute=0, second=0, microsecond=0) - timedelta(days=1))
