@@ -691,8 +691,8 @@ def generate_daily_report():
         row_stat_idle_header   = section_header_row(2)  # ③ 當天有互動但未點擊
         row_stat_silent_header = section_header_row(4)  # ⑤ 當天沉默成員
 
-        # ── Find or create the 日報 sheet ──────────────────────────────────────
-        line_meta   = ss.get(spreadsheetId=GSHEET_LINE_ID).execute()
+        # ── Find or create the 日報 sheet (in 每日統計) ────────────────────────
+        line_meta   = ss.get(spreadsheetId=GSHEET_DAILY_ID).execute()
         line_sheets = line_meta.get("sheets", [])
         daily_gid   = None
         for s in line_sheets:
@@ -702,20 +702,20 @@ def generate_daily_report():
 
         if daily_gid is not None:
             ss.values().clear(
-                spreadsheetId=GSHEET_LINE_ID,
+                spreadsheetId=GSHEET_DAILY_ID,
                 range=f"'{sheet_tab}'!A1:Z1000",
                 body={}
             ).execute()
         else:
             res = ss.batchUpdate(
-                spreadsheetId=GSHEET_LINE_ID,
+                spreadsheetId=GSHEET_DAILY_ID,
                 body={"requests": [{"addSheet": {"properties": {"title": sheet_tab}}}]}
             ).execute()
             daily_gid = res["replies"][0]["addSheet"]["properties"]["sheetId"]
 
-        # ── Move 日報 sheet to first position (before 用戶資料) ────────────────
+        # ── Move 日報 sheet to first position in 每日統計 ──────────────────────
         ss.batchUpdate(
-            spreadsheetId=GSHEET_LINE_ID,
+            spreadsheetId=GSHEET_DAILY_ID,
             body={"requests": [{"updateSheetProperties": {
                 "properties": {"sheetId": daily_gid, "index": 0},
                 "fields": "index"
@@ -796,7 +796,7 @@ def generate_daily_report():
 
         # ── Write ──────────────────────────────────────────────────────────────
         ss.values().update(
-            spreadsheetId=GSHEET_LINE_ID,
+            spreadsheetId=GSHEET_DAILY_ID,
             range=f"'{sheet_tab}'!A1",
             valueInputOption="USER_ENTERED",
             body={"values": data}
