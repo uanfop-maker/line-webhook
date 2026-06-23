@@ -713,6 +713,15 @@ def generate_daily_report():
             ).execute()
             daily_gid = res["replies"][0]["addSheet"]["properties"]["sheetId"]
 
+        # ── Move 日報 sheet to first position (before 用戶資料) ────────────────
+        ss.batchUpdate(
+            spreadsheetId=GSHEET_LINE_ID,
+            body={"requests": [{"updateSheetProperties": {
+                "properties": {"sheetId": daily_gid, "index": 0},
+                "fields": "index"
+            }}]}
+        ).execute()
+
         # ── Helper cells ───────────────────────────────────────────────────────
         def stat_hyperlink(section_row: int, label: str) -> str:
             return f'=HYPERLINK("#gid={daily_gid}&range=A{section_row}","{label}")'
