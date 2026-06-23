@@ -650,6 +650,24 @@ async def handle_message(user_id: str, reply_token: str, text: str):
     if reply:
         await reply_line(reply_token, reply)
 
+async def handle_sticker(user_id: str, message: dict):
+    ts = now_iso()
+    sticker_id = message.get("stickerId", "")
+    package_id = message.get("packageId", "")
+    dname = await get_or_fetch_display_name(user_id)
+    thumbnail_url = f"https://stickershop.line-scdn.net/stickershop/v1/sticker/{sticker_id}/iPhone/sticker.png"
+    # Verify the thumbnail URL is reachable; fall back to text if not
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.head(thumbnail_url, timeout=5)
+        content = thumbnail_url if r.status_code == 200 else f"[貼圖] packageId={package_id} stickerId={sticker_id}"
+    except Exception:
+        content = f"[貼圖] packageId={package_id} stickerId={sticker_id}"
+    sheets_append("動作紀錄", [ts, user_id, dname, "sticker", content])
+    _recent_actions.append((ts, dname, f"sticker:{sticker_id}"))
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, log_to_personal_sheet, user_id, dname, "sticker", content, ts, "")
+
 async def handle_postback(user_id: str, data: str, reply_token: str = ""):
     ts = now_iso()
     dname = await get_or_fetch_display_name(user_id)
@@ -1154,6 +1172,8 @@ async def webhook(request: Request):
             asyncio.create_task(handle_unfollow(uid))
         elif etype == "message" and event.get("message", {}).get("type") == "text":
             asyncio.create_task(handle_message(uid, rtoken, event["message"]["text"]))
+        elif etype == "message" and event.get("message", {}).get("type") == "sticker":
+            asyncio.create_task(handle_sticker(uid, event["message"]))
         elif etype == "postback":
             asyncio.create_task(handle_postback(uid, event.get("postback", {}).get("data", ""), rtoken))
 
