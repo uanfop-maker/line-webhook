@@ -579,11 +579,14 @@ async def handle_follow(user_id: str):
         user_rows = sheets_get("用戶資料", "A:F")
         for row in user_rows[1:]:
             if len(row) > 5 and row[5]:
-                fa = row[5]
-                if fa >= yesterday_22_utc:
-                    count_22 += 1
-                if fa >= today_00_utc:
-                    count_00 += 1
+                try:
+                    fa = datetime.strptime(row[5], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    if fa >= datetime.strptime(yesterday_22_utc, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc):
+                        count_22 += 1
+                    if fa >= datetime.strptime(today_00_utc, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc):
+                        count_00 += 1
+                except Exception:
+                    pass
     except Exception:
         pass
     pic = profile.get("pictureUrl", "")
