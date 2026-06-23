@@ -1,4 +1,4 @@
-import os, json, hashlib, hmac, base64, asyncio, urllib.parse
+import os, json, hashlib, hmac, base64, asyncio, urllib.parse, time
 from collections import deque
 import datetime as dt
 from datetime import datetime, timezone, timedelta
@@ -8,7 +8,7 @@ import httpx
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from google.oauth2 import service_account
@@ -181,7 +181,7 @@ async def line_reply(reply_token: str, messages: list):
 
 def assign_agent(user_id: str, display_name: str) -> dict:
     """Returns {'agent_name': str, 'agent_link': str} after assigning or finding existing"""
-    rows = sheets_get("專員名單", "A:H")
+    rows = get_agent_rows()
     if not rows or len(rows) <= 1:
         return {"agent_name": "客服", "agent_link": ""}
 
@@ -244,6 +244,9 @@ def assign_agent(user_id: str, display_name: str) -> dict:
                 body={"values": [[target[2] if len(target) > 2 else ""]]}
             ).execute()
             break
+
+    # Invalidate agent list cache since we just mutated 專員名單
+    invalidate_agent_cache()
 
     return {
         "agent_name": target[2] if len(target) > 2 else target[0],
@@ -312,14 +315,14 @@ def find_user_row(user_id: str) -> Optional[int]:
     return None
 
 def get_assigned_agent(user_id: str) -> str:
-    rows = sheets_get("專員名單", "A:H")
+    rows = get_agent_rows()
     for row in rows[1:]:
         if len(row) >= 8 and user_id in row[7].split(","):
             return row[2] if len(row) > 2 else row[0]
     return ""
 
 def check_keyword_reply(text: str) -> Optional[str]:
-    rows = sheets_get("關鍵字回應", "A:C")
+    rows = get_keyword_rows()
     for row in rows[1:]:
         if len(row) < 2:
             continue
@@ -386,6 +389,40 @@ async def get_or_fetch_display_name(user_id: str) -> str:
             ])
         _user_cache[user_id] = dname
         return dname
+
+# In-memory cache for Sheets-based keyword responses
+_keyword_cache: Optional[list] = None
+_keyword_cache_ts: float = 0.0
+KEYWORD_CACHE_TTL = 60  # seconds
+
+def get_keyword_rows() -> list:
+    """Return keyword rows from cache, refreshing at most every KEYWORD_CACHE_TTL seconds."""
+    global _keyword_cache, _keyword_cache_ts
+    now = time.time()
+    if _keyword_cache is None or (now - _keyword_cache_ts) > KEYWORD_CACHE_TTL:
+        _keyword_cache = sheets_get("關鍵字回應", "A:C")
+        _keyword_cache_ts = now
+    return _keyword_cache
+
+# In-memory cache for 專員名單 to avoid repeated reads in assign_agent
+_agent_list_cache: Optional[list] = None
+_agent_list_cache_ts: float = 0.0
+AGENT_LIST_CACHE_TTL = 120  # seconds
+
+def get_agent_rows() -> list:
+    """Return agent rows from cache, refreshing at most every AGENT_LIST_CACHE_TTL seconds."""
+    global _agent_list_cache, _agent_list_cache_ts
+    now = time.time()
+    if _agent_list_cache is None or (now - _agent_list_cache_ts) > AGENT_LIST_CACHE_TTL:
+        _agent_list_cache = sheets_get("專員名單", "A:H")
+        _agent_list_cache_ts = now
+    return _agent_list_cache
+
+def invalidate_agent_cache():
+    """Call after mutating 專員名單 so next read is fresh."""
+    global _agent_list_cache, _agent_list_cache_ts
+    _agent_list_cache = None
+    _agent_list_cache_ts = 0.0
 
 _personal_tabs: set = set()  # cache of created tab names
 
@@ -516,28 +553,70 @@ async def handle_message(user_id: str, reply_token: str, text: str):
     dname = await get_or_fetch_display_name(user_id)
 
     if text == "__ASSIGN__":
+        # assign_agent reads Sheets — do it, then reply, then log in background
         agent = assign_agent(user_id, dname)
         flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"], user_id=user_id, src="assign")
         await line_reply(reply_token, [flex_msg])
-        sheets_append("動作紀錄", [ts, user_id, dname, "assign", agent["agent_name"]])
+        # Log in background so we don't block
+        async def _log_assign():
+            sheets_append("動作紀錄", [ts, user_id, dname, "assign", agent["agent_name"]])
         _recent_actions.append((ts, dname, f"assign:{agent['agent_name']}"))
+        asyncio.create_task(_log_assign())
         return
 
     if text in KEYWORD_RESPONSES:
-        agent = assign_agent(user_id, dname)
-        text_msg = {"type": "text", "text": KEYWORD_RESPONSES[text]}
-        src_label = text.strip("_")
-        flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"], user_id=user_id, src=src_label)
-        await line_reply(reply_token, [text_msg, flex_msg])
-        sheets_append("動作紀錄", [ts, user_id, dname, "keyword", text])
-        _recent_actions.append((ts, dname, text))
-        log_to_personal_sheet(user_id, dname, "keyword", text, ts)
+        # FAST PATH: send reply immediately using cached agent list, then do heavy work in background.
+        # Step 1: quick cached lookup — is this user already assigned?
+        cached_rows = get_agent_rows()
+        pre_assigned = None
+        if cached_rows and len(cached_rows) > 1:
+            for row in cached_rows[1:]:
+                if len(row) >= 8 and user_id in row[7].split(","):
+                    pre_assigned = {
+                        "agent_name": row[2] if len(row) > 2 else row[0],
+                        "agent_link": row[4] if len(row) > 4 else ""
+                    }
+                    break
+
+        if pre_assigned:
+            # Already assigned — reply right away, no Sheets writes needed for assignment
+            text_msg = {"type": "text", "text": KEYWORD_RESPONSES[text]}
+            src_label = text.strip("_")
+            flex_msg = build_assign_flex(pre_assigned["agent_name"], pre_assigned["agent_link"], user_id=user_id, src=src_label)
+            await line_reply(reply_token, [text_msg, flex_msg])
+            _recent_actions.append((ts, dname, text))
+            # Log in background
+            async def _log_keyword_existing(agent=pre_assigned):
+                sheets_append("動作紀錄", [ts, user_id, dname, "keyword", text])
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, log_to_personal_sheet, user_id, dname, "keyword", text, ts)
+            asyncio.create_task(_log_keyword_existing())
+        else:
+            # New assignment needed — do assign_agent (Sheets reads/writes), reply, then log
+            agent = assign_agent(user_id, dname)
+            text_msg = {"type": "text", "text": KEYWORD_RESPONSES[text]}
+            src_label = text.strip("_")
+            flex_msg = build_assign_flex(agent["agent_name"], agent["agent_link"], user_id=user_id, src=src_label)
+            await line_reply(reply_token, [text_msg, flex_msg])
+            _recent_actions.append((ts, dname, text))
+            # Log in background
+            async def _log_keyword_new(agent=agent):
+                sheets_append("動作紀錄", [ts, user_id, dname, "keyword", text])
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, log_to_personal_sheet, user_id, dname, "keyword", text, ts)
+            asyncio.create_task(_log_keyword_new())
         return
 
-    sheets_append("動作紀錄", [ts, user_id, dname, "text", text])
+    # Non-keyword message: log and check Sheets-based keyword replies
     _recent_actions.append((ts, dname, text))
-    log_to_personal_sheet(user_id, dname, "text", text, ts)
+    # Check Sheets keywords first (cached — fast)
     reply = check_keyword_reply(text)
+    # Fire-and-forget logging
+    async def _log_text():
+        sheets_append("動作紀錄", [ts, user_id, dname, "text", text])
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, log_to_personal_sheet, user_id, dname, "text", text, ts)
+    asyncio.create_task(_log_text())
     if reply:
         await reply_line(reply_token, reply)
 
