@@ -197,6 +197,36 @@ def assign_agent(user_id: str, display_name: str) -> dict:
                 "agent_link": row[4] if len(row) > 4 else ""
             }
 
+    # --- Manual assignment logic ---
+    # Read 用戶資料!A:K to check 手動指派ID (col J, index 9) and 已加入專員 (col I, index 8)
+    user_rows_manual = sheets_get("用戶資料", "A:K")
+    manual_agent_id = ""
+    already_joined = False
+    for urow in user_rows_manual[1:]:
+        if urow and urow[0] == user_id:
+            manual_agent_id = urow[9].strip() if len(urow) > 9 and urow[9] else ""
+            already_joined = str(urow[8]).upper() == "TRUE" if len(urow) > 8 and urow[8] else False
+            break
+
+    if manual_agent_id or already_joined:
+        if manual_agent_id:
+            # Find agent whose B column (index 1, # field) matches 手動指派ID
+            for row in data_rows:
+                if len(row) > 1 and str(row[1]).strip() == manual_agent_id:
+                    return {
+                        "agent_name": row[2] if len(row) > 2 else row[0],
+                        "agent_link": row[4] if len(row) > 4 else ""
+                    }
+            # If no match found for manual_agent_id, fall through to auto-assign
+        else:
+            # 已加入專員=TRUE but no 手動指派ID → assign first agent in 專員名單
+            if data_rows:
+                first = data_rows[0]
+                return {
+                    "agent_name": first[2] if len(first) > 2 else first[0],
+                    "agent_link": first[4] if len(first) > 4 else ""
+                }
+
     # Filter to only active (non-disabled) agents with a valid name and link
     active_agents = [
         (i, row, int(row[5]) if len(row) >= 6 and row[5] else 0)
@@ -234,7 +264,7 @@ def assign_agent(user_id: str, display_name: str) -> dict:
     ).execute()
 
     # Update 用戶資料 assigned_agent column (H)
-    user_rows = sheets_get("用戶資料", "A:H")
+    user_rows = sheets_get("用戶資料", "A:K")
     for j, urow in enumerate(user_rows[1:], start=2):
         if urow and urow[0] == user_id:
             svc.spreadsheets().values().update(
