@@ -393,7 +393,7 @@ def check_keyword_reply(text: str) -> Optional[str]:
     return None
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(TZ_TW).strftime("%Y-%m-%d %H:%M:%S")
 
 def _populate_cache_from_sheet():
     """Read all 用戶資料 rows and populate _user_cache. Call while holding _user_cache_lock."""
@@ -569,24 +569,19 @@ async def handle_follow(user_id: str):
     log_to_personal_sheet(user_id, display_name, "follow", "", ts, profile.get("pictureUrl", ""))
     # Count follows since yesterday 22:00 TW and today 00:00 TW
     now_tw = datetime.now(TZ_TW)
-    yesterday_22_tw = (now_tw.replace(hour=22, minute=0, second=0, microsecond=0) - timedelta(days=1))
-    today_00_tw = now_tw.replace(hour=0, minute=0, second=0, microsecond=0)
-    yesterday_22_utc = yesterday_22_tw.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    today_00_utc = today_00_tw.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    yesterday_22_str = (now_tw.replace(hour=22, minute=0, second=0, microsecond=0) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    today_00_str = now_tw.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
     count_22 = 0
     count_00 = 0
     try:
         user_rows = sheets_get("用戶資料", "A:F")
         for row in user_rows[1:]:
             if len(row) > 5 and row[5]:
-                try:
-                    fa = datetime.strptime(row[5], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                    if fa >= datetime.strptime(yesterday_22_utc, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc):
-                        count_22 += 1
-                    if fa >= datetime.strptime(today_00_utc, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc):
-                        count_00 += 1
-                except Exception:
-                    pass
+                fa = row[5]
+                if fa >= yesterday_22_str:
+                    count_22 += 1
+                if fa >= today_00_str:
+                    count_00 += 1
     except Exception:
         pass
     pic = profile.get("pictureUrl", "")
@@ -725,8 +720,8 @@ def generate_daily_report():
         end_tw  = now_tw.replace(hour=22, minute=0, second=0, microsecond=0)
         start_tw = end_tw - timedelta(days=1)
 
-        start_utc = start_tw.astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
-        end_utc   = end_tw.astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
+        start_utc = start_tw.strftime("%Y-%m-%d %H:%M:%S")
+        end_utc   = end_tw.strftime("%Y-%m-%d %H:%M:%S")
 
         date_label = end_tw.strftime("%Y-%m-%d")
         sheet_tab  = f"日報 {date_label}"
@@ -984,9 +979,9 @@ def generate_daily_stats():
         # Period start = yesterday 22:00 TW
         start_tw = end_tw - timedelta(days=1)
 
-        # UTC boundaries (22:00 TW = 14:00 UTC)
-        start_utc = start_tw.astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
-        end_utc = end_tw.astimezone(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
+        # TW time boundaries for sheet comparison (sheet now stores TW time)
+        start_utc = start_tw.strftime("%Y-%m-%d %H:%M:%S")
+        end_utc = end_tw.strftime("%Y-%m-%d %H:%M:%S")
 
         # Date label = end day
         date_label = end_tw.strftime("%Y/%m/%d")
