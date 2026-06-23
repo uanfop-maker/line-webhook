@@ -144,6 +144,32 @@ def sheets_update(tab: str, range_: str, values: list):
         body={"values": values}
     ).execute()
 
+def sheets_user_data_next_row() -> int:
+    """Return the next empty row number in 用戶資料 column A (1-indexed).
+    Uses column A to avoid being confused by checkboxes in column I that extend to row 500."""
+    col_a = get_sheets().spreadsheets().values().get(
+        spreadsheetId=GSHEET_LINE_ID,
+        range="用戶資料!A:A"
+    ).execute().get("values", [])
+    # Count rows that have a non-empty value in column A
+    filled = len([r for r in col_a if r and r[0].strip()])
+    return filled + 1  # +1 because 1-indexed; header counts as row 1
+
+def sheets_user_data_append(row: list):
+    """Append a new user row to 用戶資料 by finding the first empty A-column row.
+    Avoids the append() API which gets confused by checkboxes in column I."""
+    next_row = sheets_user_data_next_row()
+    # Pad to 11 columns
+    r = list(row)
+    while len(r) < 11:
+        r.append("")
+    get_sheets().spreadsheets().values().update(
+        spreadsheetId=GSHEET_LINE_ID,
+        range=f"用戶資料!A{next_row}:K{next_row}",
+        valueInputOption="USER_ENTERED",
+        body={"values": [r[:11]]}
+    ).execute()
+
 def verify_signature(body: bytes, signature: str) -> bool:
     h = hmac.new(LINE_CHANNEL_SECRET.encode(), body, hashlib.sha256)
     return hmac.compare_digest(base64.b64encode(h.digest()).decode(), signature)
@@ -407,7 +433,7 @@ async def get_or_fetch_display_name(user_id: str) -> str:
         dname = profile.get("displayName", user_id)
         if profile:
             ts = now_iso()
-            sheets_append("用戶資料", [
+            sheets_user_data_append([
                 user_id,
                 dname,
                 profile.get("pictureUrl", ""),
@@ -527,7 +553,7 @@ async def handle_follow(user_id: str):
     if row_idx:
         sheets_update("用戶資料", f"F{row_idx}:H{row_idx}", [[ts, "", agent]])
     else:
-        sheets_append("用戶資料", [
+        sheets_user_data_append([
             user_id,
             profile.get("displayName", ""),
             profile.get("pictureUrl", ""),
