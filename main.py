@@ -569,8 +569,8 @@ async def handle_follow(user_id: str):
     log_to_personal_sheet(user_id, display_name, "follow", "", ts, profile.get("pictureUrl", ""))
     # Count follows since yesterday 22:00 TW and today 00:00 TW
     now_tw = datetime.now(TZ_TW)
-    yesterday_22_str = (now_tw.replace(hour=22, minute=0, second=0, microsecond=0) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-    today_00_str = now_tw.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    yesterday_22_dt = (now_tw.replace(hour=22, minute=0, second=0, microsecond=0) - timedelta(days=1))
+    today_00_dt = now_tw.replace(hour=0, minute=0, second=0, microsecond=0)
     count_22 = 0
     count_00 = 0
     try:
@@ -578,9 +578,16 @@ async def handle_follow(user_id: str):
         for row in user_rows[1:]:
             if len(row) > 5 and row[5]:
                 fa = row[5]
-                if fa >= yesterday_22_str:
+                try:
+                    fa_dt = TZ_TW.localize(datetime.strptime(fa, "%Y-%m-%d %H:%M:%S"))
+                except ValueError:
+                    try:
+                        fa_dt = TZ_TW.localize(datetime.strptime(fa, "%Y-%m-%d %I:%M:%S"))
+                    except ValueError:
+                        continue
+                if fa_dt >= yesterday_22_dt:
                     count_22 += 1
-                if fa >= today_00_str:
+                if fa_dt >= today_00_dt:
                     count_00 += 1
     except Exception:
         pass
