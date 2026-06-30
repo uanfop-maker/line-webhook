@@ -716,6 +716,7 @@ async def handle_postback(user_id: str, data: str, reply_token: str = ""):
     sheets_append("動作紀錄", [ts, user_id, dname, "postback", data])
     _recent_actions.append((ts, dname, data))
     log_to_personal_sheet(user_id, dname, "postback", data, ts)
+    await notify_tg(f"🔘 按鈕點擊\n暱稱：{dname}\nID：{user_id}\nData：{data}")
 
 def generate_daily_report():
     """
@@ -1182,6 +1183,8 @@ async def api_track(payload: TrackPayload):
         dname = payload.display_name or payload.user_id
         log_to_personal_sheet(payload.user_id, dname, "uri_click", content, ts)
     _recent_actions.append((ts, payload.display_name or "匿名", content))
+    dname_display = payload.display_name or "匿名"
+    await notify_tg(f"🔗 URI 按鈕點擊\n用戶：{dname_display}\n連結：{content}")
     return {"status": "ok"}
 
 
